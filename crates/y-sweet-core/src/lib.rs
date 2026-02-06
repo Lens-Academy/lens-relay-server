@@ -9,5 +9,7 @@ pub mod metrics;
 pub mod store;
 pub mod sync;
 pub mod sync_kv;
+pub mod folder_index;
+pub mod link_indexer;
 pub mod link_parser;
 pub mod webhook;
