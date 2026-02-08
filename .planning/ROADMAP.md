@@ -8,7 +8,7 @@
 
 | # | Phase | Goal | Requirements | Plans (est.) |
 |---|-------|------|--------------|--------------|
-| 1 | Bridge + History Display | User sees Discord message history in a panel alongside the document | INFRA-01, INFRA-04, CHAN-01, CHAN-02, MSG-01, MSG-03, MSG-04, UX-01 | 3 |
+| 1 | Bridge + History Display | User sees Discord message history in a panel alongside the document | INFRA-01, INFRA-04, CHAN-01, CHAN-02, MSG-01, MSG-03, MSG-04, UX-01 | 3 plans |
 | 2 | Live Streaming | New Discord messages appear in the panel in real time | INFRA-02, MSG-02, MSG-05, MSG-06, MSG-07 | 2 |
 | 3 | Posting Messages | User can send messages to Discord from the editor panel | INFRA-03, POST-01, POST-02, POST-03 | 2 |
 | 4 | Connection Resilience | Panel handles network failures gracefully with clear feedback | UX-02, UX-03 | 1 |
@@ -18,6 +18,13 @@
 ### Phase 1: Bridge + History Display
 **Goal:** User opens a document with a `discussion` frontmatter field and sees the last 50 Discord messages displayed in a chat panel with usernames, avatars, and timestamps.
 **Requirements:** INFRA-01, INFRA-04, CHAN-01, CHAN-02, MSG-01, MSG-03, MSG-04, UX-01
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md -- TDD utility functions (frontmatter, Discord URL, avatar, timestamp)
+- [ ] 01-02-PLAN.md -- Discord bridge sidecar proxy + Vite proxy config
+- [ ] 01-03-PLAN.md -- DiscussionPanel UI + EditorArea integration
+
 **Success Criteria:**
 1. User opens a document containing `discussion: https://discord.com/channels/.../...` and a chat panel appears in the sidebar
 2. The panel shows a loading spinner, then displays the last 50 messages from the linked Discord channel
