@@ -1,6 +1,13 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::Mutex;
+use tantivy::collector::TopDocs;
+use tantivy::directory::{MmapDirectory, RamDirectory};
+use tantivy::query::QueryParser;
+use tantivy::schema::{Field, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING};
+use tantivy::snippet::SnippetGenerator;
+use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
 /// A single search result with relevance score and snippet.
 #[derive(Debug, Clone, Serialize)]
@@ -13,39 +20,213 @@ pub struct SearchResult {
 }
 
 /// Full-text search index backed by tantivy.
-pub struct SearchIndex;
+///
+/// Provides BM25-ranked full-text search with snippet generation over documents
+/// identified by unique `doc_id`. Thread-safe: the IndexWriter is wrapped in a Mutex.
+pub struct SearchIndex {
+    #[allow(dead_code)]
+    index: Index,
+    #[allow(dead_code)]
+    schema: Schema,
+    doc_id_field: Field,
+    title_field: Field,
+    body_field: Field,
+    folder_field: Field,
+    writer: Mutex<IndexWriter>,
+    reader: IndexReader,
+    query_parser: QueryParser,
+}
 
 impl SearchIndex {
     /// Create a new SearchIndex with MmapDirectory at the given path.
-    pub fn new(_path: &Path) -> Result<Self> {
-        todo!("SearchIndex::new not implemented")
+    pub fn new(path: &Path) -> Result<Self> {
+        std::fs::create_dir_all(path)?;
+        let dir = MmapDirectory::open(path)?;
+        Self::build(dir)
     }
 
     /// Create a new SearchIndex backed by RAM (for tests).
     pub fn new_in_memory() -> Result<Self> {
-        todo!("SearchIndex::new_in_memory not implemented")
+        let dir = RamDirectory::create();
+        Self::build(dir)
+    }
+
+    /// Internal constructor that works with any tantivy Directory.
+    fn build<D: Into<Box<dyn tantivy::Directory>>>(dir: D) -> Result<Self> {
+        let mut schema_builder = Schema::builder();
+
+        // doc_id: STRING (indexed as single token for exact match) + STORED
+        let doc_id_field = schema_builder.add_text_field("doc_id", STRING | STORED);
+
+        // title: TEXT (tokenized for search) + STORED
+        let text_options = TextOptions::default()
+            .set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer("default")
+                    .set_index_option(tantivy::schema::IndexRecordOption::WithFreqsAndPositions),
+            )
+            .set_stored();
+        let title_field = schema_builder.add_text_field("title", text_options.clone());
+
+        // body: TEXT + STORED (STORED is required for snippet generation)
+        let body_field = schema_builder.add_text_field("body", text_options);
+
+        // folder: STORED only (not searchable in v1)
+        let folder_field = schema_builder.add_text_field("folder", STORED);
+
+        let schema = schema_builder.build();
+
+        let index = Index::open_or_create(dir, schema.clone())?;
+
+        let writer: IndexWriter = index.writer(15_000_000)?; // 15MB budget
+
+        let reader: IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()?;
+
+        // QueryParser with AND semantics and title boost 2x
+        let mut query_parser = QueryParser::for_index(&index, vec![title_field, body_field]);
+        query_parser.set_conjunction_by_default();
+        query_parser.set_field_boost(title_field, 2.0);
+
+        Ok(SearchIndex {
+            index,
+            schema,
+            doc_id_field,
+            title_field,
+            body_field,
+            folder_field,
+            writer: Mutex::new(writer),
+            reader,
+            query_parser,
+        })
     }
 
     /// Add or update a document in the index.
+    ///
+    /// This is idempotent: if a document with the same `doc_id` already exists,
+    /// it is deleted before the new version is added.
     pub fn add_document(
         &self,
-        _doc_id: &str,
-        _title: &str,
-        _body: &str,
-        _folder: &str,
+        doc_id: &str,
+        title: &str,
+        body: &str,
+        folder: &str,
     ) -> Result<()> {
-        todo!("add_document not implemented")
+        let mut writer = self.writer.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        // Delete existing document with same doc_id
+        let term = Term::from_field_text(self.doc_id_field, doc_id);
+        writer.delete_term(term);
+        // Add the new document
+        writer.add_document(doc!(
+            self.doc_id_field => doc_id,
+            self.title_field => title,
+            self.body_field => body,
+            self.folder_field => folder,
+        ))?;
+        writer.commit()?;
+        // Reload the reader to pick up changes immediately
+        self.reader.reload()?;
+        Ok(())
     }
 
     /// Remove a document from the index by doc_id.
-    pub fn remove_document(&self, _doc_id: &str) -> Result<()> {
-        todo!("remove_document not implemented")
+    pub fn remove_document(&self, doc_id: &str) -> Result<()> {
+        let mut writer = self.writer.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let term = Term::from_field_text(self.doc_id_field, doc_id);
+        writer.delete_term(term);
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
     }
 
     /// Search the index and return ranked results with snippets.
-    pub fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>> {
-        todo!("search not implemented")
+    ///
+    /// Returns an empty Vec for empty or whitespace-only queries.
+    /// Uses `parse_query_lenient` to tolerate syntax errors in the query string.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        // Guard: empty or whitespace-only queries return nothing
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (parsed_query, _errors) = self.query_parser.parse_query_lenient(query);
+
+        let searcher = self.reader.searcher();
+        let top_docs = searcher.search(&parsed_query, &TopDocs::with_limit(limit))?;
+
+        // Set up snippet generator for the body field
+        let mut snippet_generator =
+            SnippetGenerator::create(&searcher, &*parsed_query, self.body_field)?;
+        snippet_generator.set_max_num_chars(150);
+
+        let mut results = Vec::with_capacity(top_docs.len());
+        for (score, doc_address) in top_docs {
+            let retrieved: TantivyDocument = searcher.doc(doc_address)?;
+
+            let doc_id = retrieved
+                .get_first(self.doc_id_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let title = retrieved
+                .get_first(self.title_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let folder = retrieved
+                .get_first(self.folder_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let snippet = snippet_generator.snippet_from_doc(&retrieved);
+            let snippet_html = render_snippet_with_mark(&snippet);
+
+            results.push(SearchResult {
+                doc_id,
+                title,
+                folder,
+                snippet: snippet_html,
+                score,
+            });
+        }
+
+        Ok(results)
     }
+}
+
+/// Render a tantivy Snippet using `<mark>` tags instead of the default `<b>` tags.
+fn render_snippet_with_mark(snippet: &tantivy::snippet::Snippet) -> String {
+    let fragment = snippet.fragment();
+    let highlighted = snippet.highlighted();
+
+    if highlighted.is_empty() {
+        return fragment.to_string();
+    }
+
+    let mut result = String::new();
+    let mut pos = 0;
+
+    for range in highlighted {
+        // Append text before this highlight
+        if range.start > pos {
+            result.push_str(&fragment[pos..range.start]);
+        }
+        // Append highlighted text with <mark> tags
+        result.push_str("<mark>");
+        result.push_str(&fragment[range.start..range.end]);
+        result.push_str("</mark>");
+        pos = range.end;
+    }
+
+    // Append remaining text after last highlight
+    if pos < fragment.len() {
+        result.push_str(&fragment[pos..]);
+    }
+
+    result
 }
 
 #[cfg(test)]
