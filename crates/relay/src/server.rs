@@ -437,6 +437,7 @@ pub struct Server {
     search_index: Option<Arc<SearchIndex>>,
     search_ready: Arc<std::sync::atomic::AtomicBool>,
     search_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    pub(crate) mcp_sessions: Arc<crate::mcp::session::SessionManager>,
 }
 
 impl Server {
@@ -556,6 +557,7 @@ impl Server {
             search_index,
             search_ready,
             search_tx: search_tx_final,
+            mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
         })
     }
 
@@ -1120,7 +1122,13 @@ impl Server {
                 get(handle_socket_upgrade_full_path),
             )
             .route("/webhook/reload", post(reload_webhook_config_endpoint))
-            .route("/search", get(handle_search));
+            .route("/search", get(handle_search))
+            .route(
+                "/mcp",
+                post(crate::mcp::transport::handle_mcp_post)
+                    .get(crate::mcp::transport::handle_mcp_get)
+                    .delete(crate::mcp::transport::handle_mcp_delete),
+            );
 
         // Only add file endpoints if a store is configured
         if let Some(store) = &self.store {
