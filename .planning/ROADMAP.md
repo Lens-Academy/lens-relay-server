@@ -45,11 +45,11 @@ Plans:
   1. An MCP client (e.g., Claude Code, MCP Inspector) can POST to /mcp and receive a valid JSON-RPC initialize response with a server-assigned session ID
   2. Subsequent requests with the Mcp-Session-Id header are routed to the correct session state
   3. Multiple concurrent MCP clients each maintain independent sessions without cross-contamination
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
+- [ ] 02-01-PLAN.md -- MCP protocol engine (TDD: JSON-RPC types, sessions, method dispatch)
+- [ ] 02-02-PLAN.md -- HTTP transport handler + server integration + live verification
 
 ### Phase 3: MCP Read-Only Tools
 **Goal**: AI assistants can discover, read, and navigate links between documents in the knowledge base via MCP tools
