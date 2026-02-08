@@ -2,68 +2,160 @@ use serde_json::{json, Value};
 use tracing::debug;
 
 use super::jsonrpc::{
-    error_response, success_response, JsonRpcError, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, INTERNAL_ERROR, METHOD_NOT_FOUND,
+    error_response, success_response, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    INTERNAL_ERROR, METHOD_NOT_FOUND,
 };
 use super::session::SessionManager;
 
 /// Dispatch a JSON-RPC request to the appropriate handler.
 /// Returns the response and an optional new session ID (set only for initialize).
 pub fn dispatch_request(
-    _sessions: &SessionManager,
-    _session_id: Option<&str>,
-    _request: &JsonRpcRequest,
+    sessions: &SessionManager,
+    session_id: Option<&str>,
+    request: &JsonRpcRequest,
 ) -> (JsonRpcResponse, Option<String>) {
-    // STUB
-    todo!()
+    match request.method.as_str() {
+        "initialize" => {
+            let (resp, sid) =
+                handle_initialize(sessions, request.id.clone(), request.params.as_ref());
+            (resp, Some(sid))
+        }
+        "ping" => (handle_ping(request.id.clone()), None),
+        "tools/list" => (handle_tools_list(request.id.clone()), None),
+        "tools/call" => {
+            if let Err(err_resp) = validate_session(sessions, session_id, &request.id) {
+                return (err_resp, None);
+            }
+            (
+                handle_tools_call(sessions, session_id, request.id.clone(), request.params.as_ref()),
+                None,
+            )
+        }
+        _ => (
+            error_response(
+                request.id.clone(),
+                METHOD_NOT_FOUND,
+                format!("Method not found: {}", request.method),
+            ),
+            None,
+        ),
+    }
 }
 
 /// Handle a JSON-RPC notification (no response expected).
 pub fn handle_notification(
-    _sessions: &SessionManager,
-    _session_id: Option<&str>,
-    _notification: &JsonRpcNotification,
+    sessions: &SessionManager,
+    session_id: Option<&str>,
+    notification: &JsonRpcNotification,
 ) {
-    // STUB
-    todo!()
+    match notification.method.as_str() {
+        "notifications/initialized" => {
+            if let Some(sid) = session_id {
+                if sessions.mark_initialized(sid) {
+                    debug!(session_id = sid, "Session marked as initialized");
+                } else {
+                    debug!(session_id = sid, "Session not found for initialized notification");
+                }
+            }
+        }
+        "notifications/cancelled" => {
+            debug!(method = "notifications/cancelled", "Cancellation notification received (no-op)");
+        }
+        other => {
+            debug!(method = other, "Unknown notification received");
+        }
+    }
 }
 
 fn handle_initialize(
-    _sessions: &SessionManager,
-    _id: Value,
-    _params: Option<&Value>,
+    sessions: &SessionManager,
+    id: Value,
+    params: Option<&Value>,
 ) -> (JsonRpcResponse, String) {
-    // STUB
-    todo!()
+    let protocol_version = params
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("2025-03-26")
+        .to_string();
+
+    let client_info = params.and_then(|p| p.get("clientInfo")).cloned();
+
+    // Version negotiation: we always respond with our supported version
+    let negotiated_version = "2025-03-26".to_string();
+
+    debug!(
+        client_version = %protocol_version,
+        negotiated_version = %negotiated_version,
+        "MCP initialize request"
+    );
+
+    let session_id = sessions.create_session(negotiated_version.clone(), client_info);
+
+    let response = success_response(
+        id,
+        json!({
+            "protocolVersion": negotiated_version,
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "lens-relay",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }),
+    );
+
+    (response, session_id)
 }
 
-fn handle_ping(_id: Value) -> JsonRpcResponse {
-    // STUB
-    todo!()
+fn handle_ping(id: Value) -> JsonRpcResponse {
+    success_response(id, json!({}))
 }
 
-fn handle_tools_list(_id: Value) -> JsonRpcResponse {
-    // STUB
-    todo!()
+fn handle_tools_list(id: Value) -> JsonRpcResponse {
+    success_response(id, json!({ "tools": [] }))
 }
 
 fn handle_tools_call(
     _sessions: &SessionManager,
     _session_id: Option<&str>,
-    _id: Value,
+    id: Value,
     _params: Option<&Value>,
 ) -> JsonRpcResponse {
-    // STUB
-    todo!()
+    // Stub: no tools available yet (will be implemented in Phase 4)
+    error_response(id, INTERNAL_ERROR, "No tools available")
 }
 
 fn validate_session(
-    _sessions: &SessionManager,
-    _session_id: Option<&str>,
-    _id: &Value,
+    sessions: &SessionManager,
+    session_id: Option<&str>,
+    id: &Value,
 ) -> Result<(), JsonRpcResponse> {
-    // STUB
-    todo!()
+    let sid = session_id.ok_or_else(|| {
+        error_response(
+            id.clone(),
+            INTERNAL_ERROR,
+            "No session ID provided. Send an initialize request first.",
+        )
+    })?;
+
+    let session = sessions.get_session(sid).ok_or_else(|| {
+        error_response(
+            id.clone(),
+            INTERNAL_ERROR,
+            "Session not found. Send an initialize request first.",
+        )
+    })?;
+
+    if !session.initialized {
+        return Err(error_response(
+            id.clone(),
+            INTERNAL_ERROR,
+            "Session not initialized. Send notifications/initialized first.",
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

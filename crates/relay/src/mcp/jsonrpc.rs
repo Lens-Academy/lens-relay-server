@@ -51,25 +51,64 @@ pub struct JsonRpcError {
 
 /// Parse a JSON value into a JsonRpcMessage.
 /// Presence of "id" field distinguishes Request from Notification.
-pub fn parse_message(_body: &Value) -> Result<JsonRpcMessage, JsonRpcError> {
-    // STUB: will be implemented in GREEN phase
-    Err(JsonRpcError {
-        code: INTERNAL_ERROR,
-        message: "Not implemented".into(),
+pub fn parse_message(body: &Value) -> Result<JsonRpcMessage, JsonRpcError> {
+    let obj = body.as_object().ok_or_else(|| JsonRpcError {
+        code: INVALID_REQUEST,
+        message: "Invalid Request: expected JSON object".into(),
         data: None,
-    })
+    })?;
+
+    // Check that "method" field exists and is a string
+    if !obj.contains_key("method") {
+        return Err(JsonRpcError {
+            code: INVALID_REQUEST,
+            message: "Invalid Request: missing method field".into(),
+            data: None,
+        });
+    }
+
+    // Presence of "id" field (even if null) distinguishes Request from Notification
+    if obj.contains_key("id") {
+        serde_json::from_value::<JsonRpcRequest>(body.clone())
+            .map(JsonRpcMessage::Request)
+            .map_err(|e| JsonRpcError {
+                code: INVALID_REQUEST,
+                message: format!("Invalid Request: {}", e),
+                data: None,
+            })
+    } else {
+        serde_json::from_value::<JsonRpcNotification>(body.clone())
+            .map(JsonRpcMessage::Notification)
+            .map_err(|e| JsonRpcError {
+                code: INVALID_REQUEST,
+                message: format!("Invalid Request: {}", e),
+                data: None,
+            })
+    }
 }
 
 /// Create a success response with the given id and result.
-pub fn success_response(_id: Value, _result: Value) -> JsonRpcResponse {
-    // STUB
-    todo!()
+pub fn success_response(id: Value, result: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id,
+        result: Some(result),
+        error: None,
+    }
 }
 
 /// Create an error response with the given id, code, and message.
-pub fn error_response(_id: Value, _code: i64, _message: impl Into<String>) -> JsonRpcResponse {
-    // STUB
-    todo!()
+pub fn error_response(id: Value, code: i64, message: impl Into<String>) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0".into(),
+        id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: message.into(),
+            data: None,
+        }),
+    }
 }
 
 #[cfg(test)]

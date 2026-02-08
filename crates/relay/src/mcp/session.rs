@@ -25,41 +25,53 @@ impl SessionManager {
     /// Create a new session, returning the session ID.
     pub fn create_session(
         &self,
-        _protocol_version: String,
-        _client_info: Option<Value>,
+        protocol_version: String,
+        client_info: Option<Value>,
     ) -> String {
-        // STUB
-        todo!()
+        let session_id = nanoid::nanoid!(32);
+        let now = Instant::now();
+        let session = McpSession {
+            session_id: session_id.clone(),
+            protocol_version,
+            client_info,
+            initialized: false,
+            created_at: now,
+            last_activity: now,
+        };
+        self.sessions.insert(session_id.clone(), session);
+        session_id
     }
 
     /// Look up a session by ID.
     pub fn get_session(
         &self,
-        _session_id: &str,
+        session_id: &str,
     ) -> Option<dashmap::mapref::one::Ref<'_, String, McpSession>> {
-        // STUB
-        todo!()
+        self.sessions.get(session_id)
     }
 
     /// Get a mutable reference to a session.
     pub fn get_session_mut(
         &self,
-        _session_id: &str,
+        session_id: &str,
     ) -> Option<dashmap::mapref::one::RefMut<'_, String, McpSession>> {
-        // STUB
-        todo!()
+        self.sessions.get_mut(session_id)
     }
 
     /// Mark a session as initialized. Returns true if session existed.
-    pub fn mark_initialized(&self, _session_id: &str) -> bool {
-        // STUB
-        todo!()
+    pub fn mark_initialized(&self, session_id: &str) -> bool {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            session.initialized = true;
+            session.last_activity = Instant::now();
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove a session. Returns true if session existed.
-    pub fn remove_session(&self, _session_id: &str) -> bool {
-        // STUB
-        todo!()
+    pub fn remove_session(&self, session_id: &str) -> bool {
+        self.sessions.remove(session_id).is_some()
     }
 }
 
