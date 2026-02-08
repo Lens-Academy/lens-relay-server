@@ -22,23 +22,32 @@ export function FileTreeNode({
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [editValue, setEditValue] = useState(node.data.name);
+  // Guard: ignore blur events until the input has been properly focused
+  const blurGuardRef = useRef(false);
 
   // Focus input when editing starts
   useEffect(() => {
     if (isEditing && inputRef.current) {
-      inputRef.current.focus();
-      // Select name without extension for markdown files
-      const name = node.data.name;
-      const dotIndex = name.lastIndexOf('.');
-      if (dotIndex > 0) {
-        inputRef.current.setSelectionRange(0, dotIndex);
-      } else {
-        inputRef.current.select();
-      }
+      blurGuardRef.current = true;
+      // Delay focus+select so it happens after Radix menu close settles
+      setTimeout(() => {
+        if (!inputRef.current) return;
+        inputRef.current.focus();
+        // Select name without extension for markdown files
+        const name = node.data.name;
+        const dotIndex = name.lastIndexOf('.');
+        if (dotIndex > 0) {
+          inputRef.current.setSelectionRange(0, dotIndex);
+        } else {
+          inputRef.current.select();
+        }
+        blurGuardRef.current = false;
+      }, 50);
     }
   }, [isEditing, node.data.name]);
 
   const handleRename = () => {
+    blurGuardRef.current = true; // Arm guard before state change
     ctx.onRequestRename?.(node.data.path);
     ctx.onEditingChange(node.data.path);
     setEditValue(node.data.name);
@@ -56,12 +65,26 @@ export function FileTreeNode({
     ctx.onEditingChange(null);
   };
 
+  const cancelledRef = useRef(false);
+
+  const handleBlur = () => {
+    if (blurGuardRef.current) return; // Ignore blur during edit mode transition
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      return; // Escape was pressed — don't save
+    }
+    handleSubmitRename();
+  };
+
   const handleCancelRename = () => {
+    cancelledRef.current = true;
     ctx.onEditingChange(null);
     setEditValue(node.data.name);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Stop all keys from bubbling to react-arborist tree navigation
+    e.stopPropagation();
     if (e.key === 'Enter') {
       e.preventDefault();
       handleSubmitRename();
@@ -158,7 +181,7 @@ export function FileTreeNode({
           type="text"
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
-          onBlur={handleCancelRename}
+          onBlur={handleBlur}
           onKeyDown={handleKeyDown}
           className="flex-1 text-sm text-gray-700 bg-white border border-blue-400 rounded px-1 py-0 outline-none ml-1"
           onClick={(e) => e.stopPropagation()}

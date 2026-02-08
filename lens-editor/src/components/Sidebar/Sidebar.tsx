@@ -6,6 +6,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { useNavigation } from '../../contexts/NavigationContext';
 import { buildTreeFromPaths, filterTree } from '../../lib/tree-utils';
 import { createDocument, renameDocument, deleteDocument } from '../../lib/relay-api';
+import { getFolderDocForPath, getOriginalPath, getFolderNameFromPath } from '../../lib/multi-folder-utils';
 import { RELAY_ID } from '../../App';
 
 interface SidebarProps {
@@ -28,7 +29,7 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
   const [newDocName, setNewDocName] = useState('');
 
   // Get metadata from NavigationContext (lifted to App level)
-  const { metadata, doc } = useNavigation();
+  const { metadata, folderDocs, folderNames } = useNavigation();
 
   // Build tree from metadata
   const treeData = useMemo(() => {
@@ -51,8 +52,12 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
   }, [onSelectDocument]);
 
   // CRUD handlers
-  const handleRenameSubmit = useCallback((oldPath: string, newName: string) => {
+  const handleRenameSubmit = useCallback((prefixedOldPath: string, newName: string) => {
+    const doc = getFolderDocForPath(prefixedOldPath, folderDocs, folderNames);
     if (!doc) return;
+    // Strip folder prefix to get the original Y.Doc path
+    const folderName = getFolderNameFromPath(prefixedOldPath, folderNames)!;
+    const oldPath = getOriginalPath(prefixedOldPath, folderName);
     // Build new path by replacing the filename
     const parts = oldPath.split('/');
     // Preserve .md extension if user didn't include it
@@ -60,18 +65,25 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
     parts[parts.length - 1] = filename;
     const newPath = parts.join('/');
     renameDocument(doc, oldPath, newPath);
-  }, [doc]);
+  }, [folderDocs, folderNames]);
 
   const handleDeleteConfirm = useCallback(() => {
-    if (!doc || !deleteTarget) return;
-    deleteDocument(doc, deleteTarget.path);
+    if (!deleteTarget) return;
+    const doc = getFolderDocForPath(deleteTarget.path, folderDocs, folderNames);
+    if (!doc) return;
+    const folderName = getFolderNameFromPath(deleteTarget.path, folderNames)!;
+    const originalPath = getOriginalPath(deleteTarget.path, folderName);
+    deleteDocument(doc, originalPath);
     setDeleteTarget(null);
-  }, [doc, deleteTarget]);
+  }, [folderDocs, folderNames, deleteTarget]);
 
   const handleCreateDocument = useCallback(async () => {
-    if (!doc || !newDocName.trim()) {
-      return;
-    }
+    if (!newDocName.trim()) return;
+    // Use first folder by default for new documents
+    const targetFolder = folderNames[0];
+    if (!targetFolder) return;
+    const doc = folderDocs.get(targetFolder);
+    if (!doc) return;
     const name = newDocName.trim();
     // Add .md extension if not present, and ensure path starts with /
     const filename = name.endsWith('.md') ? name : `${name}.md`;
@@ -84,9 +96,8 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
       setIsCreating(false);
     } catch (error) {
       console.error('Failed to create document:', error);
-      // TODO: Show error to user
     }
-  }, [doc, newDocName]);
+  }, [folderDocs, folderNames, newDocName]);
 
   const handleNewDocKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -122,7 +133,7 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
         ) : (
           <button
             onClick={() => setIsCreating(true)}
-            disabled={!doc}
+            disabled={folderDocs.size === 0}
             className="w-full px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100
                        hover:bg-gray-200 rounded-md disabled:opacity-60 disabled:cursor-not-allowed"
           >
@@ -140,13 +151,13 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
       {/* Tree content */}
       <div className={`flex-1 overflow-y-auto ${isStale ? 'opacity-80' : ''}`}>
         {/* Loading state: no doc yet or empty metadata */}
-        {!doc && Object.keys(metadata).length === 0 && (
+        {folderDocs.size === 0 && Object.keys(metadata).length === 0 && (
           <div className="p-4 text-sm text-gray-500">
             Loading documents...
           </div>
         )}
 
-        {filteredTree.length === 0 && doc && (
+        {filteredTree.length === 0 && folderDocs.size > 0 && (
           <div className="p-4 text-sm text-gray-500 text-center">
             {searchTerm ? (
               'No matching documents'

@@ -42,7 +42,7 @@ export async function getClientToken(docId: string): Promise<ClientToken> {
 
   return {
     url: data.url,
-    baseUrl: USE_LOCAL_RELAY ? 'http://localhost:8190' : RELAY_URL,
+    baseUrl: data.baseUrl || (USE_LOCAL_RELAY ? `http://localhost:8090` : RELAY_URL),
     docId: data.docId,
     token: data.token,
     authorization: 'full',
