@@ -7,9 +7,8 @@ import { getClientToken } from './auth';
 const SERVER_TOKEN = '2D3RhEOhAQSgWEGkAWxyZWxheS1zZXJ2ZXIDeB1odHRwczovL3JlbGF5LmxlbnNhY2FkZW15Lm9yZwYaaWdOJToAATlIZnNlcnZlckhUsS3xaA3zBw';
 const RELAY_URL = 'https://relay.lensacademy.org';
 
-// Local relay-server doesn't need auth and uses test IDs
+const RELAY_ID = 'cb696037-0f72-4e93-8717-4e433129d789';
 const USE_LOCAL_RELAY = import.meta.env?.VITE_LOCAL_RELAY === 'true';
-const RELAY_ID = USE_LOCAL_RELAY ? 'a0000000-0000-4000-8000-000000000000' : 'cb696037-0f72-4e93-8717-4e433129d789';
 
 // In development, use Vite proxy to avoid CORS
 const API_BASE = import.meta.env?.DEV ? '/api/relay' : RELAY_URL;

@@ -12,7 +12,7 @@ export function FileTree({ data, onSelect, openAll }: FileTreeProps) {
   return (
     <Tree<TreeNode>
       data={data}
-      openByDefault={openAll ?? false}
+      openByDefault={true}
       indent={16}
       rowHeight={28}
       width="100%"

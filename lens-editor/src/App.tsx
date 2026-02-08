@@ -7,30 +7,20 @@ import { DisconnectionModal } from './components/DisconnectionModal/Disconnectio
 import { NavigationContext } from './contexts/NavigationContext';
 import { useMultiFolderMetadata, type FolderConfig } from './hooks/useMultiFolderMetadata';
 
-// Local relay-server uses test IDs, production uses real Relay IDs
+// VITE_LOCAL_RELAY=true routes requests to a local relay-server via Vite proxy
 const USE_LOCAL_RELAY = import.meta.env.VITE_LOCAL_RELAY === 'true';
 
-// Relay server ID (from CLAUDE.md)
-export const RELAY_ID = USE_LOCAL_RELAY
-  ? 'a0000000-0000-4000-8000-000000000000'
-  : 'cb696037-0f72-4e93-8717-4e433129d789';
+// Relay server ID — always the production ID since local dev uses a copy of production data
+export const RELAY_ID = 'cb696037-0f72-4e93-8717-4e433129d789';
 
 // Folder configuration
-const FOLDERS: FolderConfig[] = USE_LOCAL_RELAY
-  ? [
-      { id: 'b0000001-0000-4000-8000-000000000001', name: 'Relay Folder 1' },
-      { id: 'b0000002-0000-4000-8000-000000000002', name: 'Relay Folder 2' },
-    ]
-  : [
-      { id: 'fbd5eb54-73cc-41b0-ac28-2b93d3b4244e', name: 'Lens' },
-      { id: 'ea4015da-24af-4d9d-ac49-8c902cb17121', name: 'Lens Edu' },
-    ];
+const FOLDERS: FolderConfig[] = [
+  { id: 'fbd5eb54-73cc-41b0-ac28-2b93d3b4244e', name: 'Lens' },
+  { id: 'ea4015da-24af-4d9d-ac49-8c902cb17121', name: 'Lens Edu' },
+];
 
 // Default document to show on load
-const DOC_UUID = USE_LOCAL_RELAY
-  ? 'c0000001-0000-4000-8000-000000000001'
-  : '76c3e654-0e77-4538-962f-1b419647206e';
-const DEFAULT_DOC_ID = `${RELAY_ID}-${DOC_UUID}`;
+const DEFAULT_DOC_ID = `${RELAY_ID}-76c3e654-0e77-4538-962f-1b419647206e`;
 
 export function App() {
   const [activeDocId, setActiveDocId] = useState<string>(DEFAULT_DOC_ID);

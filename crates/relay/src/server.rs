@@ -173,7 +173,8 @@ pub struct Server {
     cancellation_token: CancellationToken,
     /// Whether to garbage collect docs that are no longer in use.
     /// Disabled for single-doc mode, since we only have one doc.
-    doc_gc: bool,
+    /// Uses AtomicBool so it can be temporarily disabled during startup loading.
+    doc_gc: std::sync::atomic::AtomicBool,
     event_dispatcher: Option<Arc<dyn EventDispatcher>>,
     sync_protocol_event_sender: Arc<SyncProtocolEventSender>,
     metrics: Arc<RelayMetrics>,
@@ -251,7 +252,7 @@ impl Server {
             url,
             allowed_hosts,
             cancellation_token,
-            doc_gc,
+            doc_gc: std::sync::atomic::AtomicBool::new(doc_gc),
             event_dispatcher,
             sync_protocol_event_sender,
             metrics,
@@ -425,7 +426,7 @@ impl Server {
                 .instrument(span!(Level::INFO, "save_loop", doc_id=?doc_id)),
             );
 
-            if self.doc_gc {
+            if self.doc_gc.load(std::sync::atomic::Ordering::Relaxed) {
                 self.doc_worker_tracker.spawn(
                     Self::doc_gc_worker(
                         self.docs.clone(),
@@ -457,6 +458,10 @@ impl Server {
         let total = doc_ids.len();
         tracing::info!("Loading {} documents from storage...", total);
 
+        // Temporarily disable GC during bulk loading — all docs would be
+        // immediately GCed since no clients are connected yet.
+        let gc_was_enabled = self.doc_gc.swap(false, std::sync::atomic::Ordering::Relaxed);
+
         let mut loaded = 0;
         let mut failed = 0;
 
@@ -479,6 +484,9 @@ impl Server {
                 }
             }
         }
+
+        // Restore GC setting
+        self.doc_gc.store(gc_was_enabled, std::sync::atomic::Ordering::Relaxed);
 
         tracing::info!(
             "Document loading complete: {} loaded, {} failed, {} total in storage",
