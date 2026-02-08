@@ -7,18 +7,18 @@
 
 ### Search Index
 
-- [ ] **SRCH-01**: Full-text keyword search across all documents in Lens and Lens Edu folders
-- [ ] **SRCH-02**: Search results include relevance ranking (BM25)
-- [ ] **SRCH-03**: Search results include text snippets showing matching content
-- [ ] **SRCH-04**: Index automatically updates when documents are edited (debounced)
-- [ ] **SRCH-05**: Search available via HTTP API endpoint on the relay server
-- [ ] **SRCH-06**: Search index uses tantivy with MmapDirectory (memory-safe for 4GB VPS)
+- [x] **SRCH-01**: Full-text keyword search across all documents in Lens and Lens Edu folders
+- [x] **SRCH-02**: Search results include relevance ranking (BM25)
+- [x] **SRCH-03**: Search results include text snippets showing matching content
+- [x] **SRCH-04**: Index automatically updates when documents are edited (debounced)
+- [x] **SRCH-05**: Search available via HTTP API endpoint on the relay server
+- [x] **SRCH-06**: Search index uses tantivy with MmapDirectory (memory-safe for 4GB VPS)
 
 ### MCP Server
 
-- [ ] **MCP-01**: MCP endpoint mounted on relay server (e.g. `/mcp`), accessible via URL
-- [ ] **MCP-02**: Custom Streamable HTTP transport (JSON-RPC over HTTP POST, no rmcp dependency)
-- [ ] **MCP-03**: Session management via Mcp-Session-Id header (server-assigned on initialize)
+- [x] **MCP-01**: MCP endpoint mounted on relay server (e.g. `/mcp`), accessible via URL
+- [x] **MCP-02**: Custom Streamable HTTP transport (JSON-RPC over HTTP POST, no rmcp dependency)
+- [x] **MCP-03**: Session management via Mcp-Session-Id header (server-assigned on initialize)
 - [ ] **MCP-04**: Read-before-edit enforcement: server tracks which documents each session has read, rejects edits on unread documents
 - [ ] **MCP-05**: MCP tool: list all documents with metadata (name, folder, last modified)
 - [ ] **MCP-06**: MCP tool: read document content (returns markdown text)
@@ -70,15 +70,15 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SRCH-01 | Phase 1 | Pending |
-| SRCH-02 | Phase 1 | Pending |
-| SRCH-03 | Phase 1 | Pending |
-| SRCH-04 | Phase 1 | Pending |
-| SRCH-05 | Phase 1 | Pending |
-| SRCH-06 | Phase 1 | Pending |
-| MCP-01 | Phase 2 | Pending |
-| MCP-02 | Phase 2 | Pending |
-| MCP-03 | Phase 2 | Pending |
+| SRCH-01 | Phase 1 | Complete |
+| SRCH-02 | Phase 1 | Complete |
+| SRCH-03 | Phase 1 | Complete |
+| SRCH-04 | Phase 1 | Complete |
+| SRCH-05 | Phase 1 | Complete |
+| SRCH-06 | Phase 1 | Complete |
+| MCP-01 | Phase 2 | Complete |
+| MCP-02 | Phase 2 | Complete |
+| MCP-03 | Phase 2 | Complete |
 | MCP-04 | Phase 4 | Pending |
 | MCP-05 | Phase 3 | Pending |
 | MCP-06 | Phase 3 | Pending |
@@ -96,4 +96,4 @@
 
 ---
 *Requirements defined: 2026-02-08*
-*Last updated: 2026-02-08 -- phase mappings added after roadmap creation*
+*Last updated: 2026-02-08 -- Phase 1 (SRCH) and Phase 2 (MCP transport) marked complete*
