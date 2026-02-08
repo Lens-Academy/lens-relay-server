@@ -47,7 +47,6 @@ use y_sweet_core::{
         DebouncedSyncProtocolEventSender, DocumentUpdatedEvent, EventDispatcher, EventEnvelope,
         EventSender, SyncProtocolEventSender, UnifiedEventDispatcher, WebhookSender,
     },
-    folder_index::FolderIndex,
     link_indexer::LinkIndexer,
     metrics::RelayMetrics,
     store::Store,
@@ -55,7 +54,6 @@ use y_sweet_core::{
     sync_kv::SyncKv,
     webhook::WebhookConfig,
 };
-use yrs::{Map, ReadTxn, Transact};
 
 const RELAY_SERVER_VERSION: &str = env!("GIT_VERSION");
 
@@ -179,8 +177,6 @@ pub struct Server {
     event_dispatcher: Option<Arc<dyn EventDispatcher>>,
     sync_protocol_event_sender: Arc<SyncProtocolEventSender>,
     metrics: Arc<RelayMetrics>,
-    #[allow(dead_code)] // Used indirectly via link_indexer; will be used for API queries
-    folder_index: FolderIndex,
     link_indexer: Option<Arc<LinkIndexer>>,
 }
 
@@ -234,8 +230,7 @@ impl Server {
         tracing::info!("Event dispatcher created successfully");
 
         let docs = Arc::new(DashMap::new());
-        let folder_index = FolderIndex::new();
-        let (link_indexer, index_rx) = LinkIndexer::new(folder_index.clone());
+        let (link_indexer, index_rx) = LinkIndexer::new();
         let link_indexer = Arc::new(link_indexer);
 
         // Spawn background worker for link indexing
@@ -260,7 +255,6 @@ impl Server {
             event_dispatcher,
             sync_protocol_event_sender,
             metrics,
-            folder_index,
             link_indexer: Some(link_indexer),
         })
     }
@@ -445,55 +439,6 @@ impl Server {
         }
 
         self.docs.insert(doc_id.to_string(), dwskv);
-
-        // After inserting doc, check if it's a folder doc and populate FolderIndex
-        if let Some(ref link_indexer) = self.link_indexer {
-            if let Some(dwskv) = self.docs.get(doc_id) {
-                let awareness_arc = dwskv.awareness();
-                let awareness_guard = awareness_arc.read().unwrap();
-                let txn = awareness_guard.doc.transact();
-
-                if let Some(filemeta) = txn.get_map("filemeta_v0") {
-                    // This is a folder doc - extract folder_id from doc_id
-                    if let Some((_relay_id, folder_uuid)) =
-                        y_sweet_core::link_indexer::parse_doc_id(doc_id)
-                    {
-                        let mut registered = 0;
-                        for (_path, value) in filemeta.iter(&txn) {
-                            if let yrs::Out::YMap(meta_map) = value {
-                                if let Some(yrs::Out::Any(yrs::Any::String(ref doc_uuid))) =
-                                    meta_map.get(&txn, "id")
-                                {
-                                    link_indexer.folder_index().register(doc_uuid, folder_uuid);
-                                    registered += 1;
-                                }
-                            }
-                        }
-                        if registered > 0 {
-                            tracing::info!(
-                                doc_id = ?doc_id,
-                                registered = registered,
-                                "Populated FolderIndex from filemeta_v0"
-                            );
-                        }
-                    }
-                } else {
-                    // Not a folder doc — check if it's a content doc we can index
-                    if let Some((_relay_id, doc_uuid)) =
-                        y_sweet_core::link_indexer::parse_doc_id(doc_id)
-                    {
-                        if link_indexer.folder_index().get_folder(doc_uuid).is_some() {
-                            // Content doc is in a known folder — trigger indexing on load
-                            let indexer = link_indexer.clone();
-                            let doc_key = doc_id.to_string();
-                            tokio::spawn(async move {
-                                indexer.on_document_update(&doc_key).await;
-                            });
-                        }
-                    }
-                }
-            }
-        }
 
         Ok(())
     }
