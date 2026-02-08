@@ -48,7 +48,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md -- MCP protocol engine (TDD: JSON-RPC types, sessions, method dispatch)
+- [x] 02-01-PLAN.md -- MCP protocol engine (TDD: JSON-RPC types, sessions, method dispatch)
 - [ ] 02-02-PLAN.md -- HTTP transport handler + server integration + live verification
 
 ### Phase 3: MCP Read-Only Tools
@@ -102,7 +102,7 @@ Phases 1 and 2 can proceed in parallel. Then 3 -> 4. Phase 5 can proceed after P
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Search Index | 2/2 | Complete | 2026-02-08 |
-| 2. MCP Transport | 0/2 | Not started | - |
+| 2. MCP Transport | 1/2 | In progress | - |
 | 3. MCP Read-Only Tools | 0/2 | Not started | - |
 | 4. MCP Search & Edit Tools | 0/2 | Not started | - |
 | 5. Search UI | 0/2 | Not started | - |
