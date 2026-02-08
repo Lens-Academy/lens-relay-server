@@ -1,5 +1,4 @@
 import { verifyShareToken } from './share-token.ts';
-import type { ShareTokenPayload } from './share-token.ts';
 import type { ClientToken, UserRole } from '../shared/types.ts';
 
 interface AuthHandlerConfig {
@@ -65,8 +64,10 @@ export function createAuthHandler(config: AuthHandlerConfig) {
 }
 
 export class AuthError extends Error {
-  constructor(public status: number, message: string) {
+  status: number;
+  constructor(status: number, message: string) {
     super(message);
     this.name = 'AuthError';
+    this.status = status;
   }
 }
