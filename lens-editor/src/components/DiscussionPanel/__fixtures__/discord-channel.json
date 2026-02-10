@@ -1,0 +1,19 @@
+{
+    "id": "1443369662560735264",
+    "type": 0,
+    "last_message_id": "1468422889739915438",
+    "flags": 0,
+    "guild_id": "1443369661847834688",
+    "name": "general",
+    "parent_id": null,
+    "rate_limit_per_user": 0,
+    "topic": null,
+    "position": 1,
+    "permission_overwrites": [],
+    "nsfw": false,
+    "icon_emoji": {
+        "id": null,
+        "name": "\ud83d\udc4b"
+    },
+    "theme_color": null
+}
