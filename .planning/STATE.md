@@ -5,21 +5,24 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Users can participate in the Discord discussion about a document without leaving the editor.
-**Current focus:** Phase 2 - Live Streaming (Discord markdown rendering complete)
+**Current focus:** Phase 2 complete. Ready for Phase 3 (Posting Messages) or Phase 4 (Connection Resilience).
 
 ## Position
 
-- **Current phase:** 2 of 4 (Live Streaming)
-- **Plan:** 2 of 3 in phase complete
-- **Status:** In progress
-- **Last activity:** 2026-02-10 - Completed 02-02-PLAN.md (Discord markdown rendering)
+- **Current phase:** 2 of 4 (Live Streaming) -- COMPLETE
+- **Plan:** 3 of 3 in phase complete
+- **Status:** Phase complete
+- **Last activity:** 2026-02-10 - Completed 02-03-PLAN.md (SSE client, auto-scroll, new messages indicator)
 
-Progress: `[#####...] 4/6 plans (67%)`
+Progress: `[######...] 6/9 plans (67%)`
 
 ## Recent Decisions
 
 | Decision | Made In | Rationale |
 |----------|---------|-----------|
+| EventSource dedup via state updater function | 02-03 | prev.some() inside setMessages avoids stale closure issues |
+| IntersectionObserver sentinel for scroll detection | 02-03 | 1px sentinel div more reliable than scroll math calculations |
+| Wrapper div pattern for floating indicator | 02-03 | NewMessagesBar outside scroll container prevents it scrolling away |
 | AST-to-React rendering for Discord markdown | 02-02 | Safe XSS-free rendering without dangerouslySetInnerHTML |
 | Graceful fallback for unresolved Discord mentions | 02-02 | Mentions need API calls to resolve; show styled placeholder badges |
 | div wrapper instead of p for message content | 02-02 | DiscordMarkdown renders block-level elements (pre, blockquote) invalid inside p |
@@ -38,8 +41,8 @@ Progress: `[#####...] 4/6 plans (67%)`
 ## Session Continuity
 
 - **Last session:** 2026-02-10
-- **Stopped at:** Completed 02-02-PLAN.md (Discord markdown rendering)
-- **Resume file:** .planning/phases/02-live-streaming/02-03-PLAN.md
+- **Stopped at:** Completed 02-03-PLAN.md (Phase 2 complete)
+- **Resume file:** None (next phase planning needed)
 
 ---
-*Last updated: 2026-02-10 after completing plan 02-02*
+*Last updated: 2026-02-10 after completing plan 02-03 (Phase 2 complete)*
