@@ -71,6 +71,12 @@ pub fn tool_definitions() -> Vec<Value> {
 
 /// Dispatch a tool call to the correct handler and wrap result in MCP CallToolResult format.
 pub fn dispatch_tool(server: &Arc<Server>, name: &str, arguments: &Value) -> Value {
+    // Lazy rebuild: if the resolver has no entries but docs exist, trigger a rebuild.
+    // This handles the case where docs were created after server startup (e.g. local dev).
+    if server.doc_resolver().all_paths().is_empty() {
+        server.doc_resolver().rebuild(server.docs());
+    }
+
     match name {
         "read" => match read::execute(server, arguments) {
             Ok(text) => tool_success(&text),
