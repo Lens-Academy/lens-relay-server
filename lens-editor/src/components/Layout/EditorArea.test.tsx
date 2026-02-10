@@ -50,6 +50,10 @@ vi.mock('../BacklinksPanel', () => ({
   BacklinksPanel: () => <div data-testid="mock-backlinks-panel" className="backlinks-panel">Backlinks</div>,
 }));
 
+vi.mock('../DiscussionPanel', () => ({
+  ConnectedDiscussionPanel: () => null,
+}));
+
 describe('EditorArea', () => {
   it('renders CommentsPanel in sidebar', () => {
     const { container } = render(<EditorArea currentDocId="test-doc" />);

@@ -117,18 +117,21 @@ describe('DiscussionPanel - with discussion frontmatter', () => {
     render(<DiscussionPanel doc={doc} />);
 
     // The first chronological text message content should appear
+    // Use getAllByText since the fixture has duplicate message content
     const firstMsg = chronologicalMessages[0];
     await waitFor(() => {
-      expect(screen.getByText(firstMsg.content, { exact: false })).toBeInTheDocument();
+      const matches = screen.getAllByText(firstMsg.content, { exact: false });
+      expect(matches.length).toBeGreaterThan(0);
     });
   });
 
   it('renders usernames', async () => {
     render(<DiscussionPanel doc={doc} />);
 
-    // lucbrinkman has global_name "Luc Brinkman"
+    // lucbrinkman has global_name "Luc Brinkman" -- appears multiple times due to grouping headers
     await waitFor(() => {
-      expect(screen.getByText('Luc Brinkman')).toBeInTheDocument();
+      const matches = screen.getAllByText('Luc Brinkman');
+      expect(matches.length).toBeGreaterThan(0);
     });
   });
 
@@ -136,8 +139,10 @@ describe('DiscussionPanel - with discussion frontmatter', () => {
     render(<DiscussionPanel doc={doc} />);
 
     // "Luc's Dev App" has null global_name, should fall back to username
+    // Appears multiple times since the bot posts many messages
     await waitFor(() => {
-      expect(screen.getByText("Luc's Dev App")).toBeInTheDocument();
+      const matches = screen.getAllByText("Luc's Dev App");
+      expect(matches.length).toBeGreaterThan(0);
     });
   });
 

@@ -9,6 +9,7 @@ import { TableOfContents } from '../TableOfContents';
 import { BacklinksPanel } from '../BacklinksPanel';
 import { CommentsPanel } from '../CommentsPanel';
 import { DebugYMapPanel } from '../DebugYMapPanel';
+import { ConnectedDiscussionPanel } from '../DiscussionPanel';
 import { useNavigation } from '../../contexts/NavigationContext';
 
 /**
@@ -72,6 +73,8 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
             <CommentsPanel view={editorView} stateVersion={stateVersion} />
           </div>
         </aside>
+        {/* Discussion panel - renders only when document has discussion frontmatter */}
+        <ConnectedDiscussionPanel />
       </div>
     </main>
   );
