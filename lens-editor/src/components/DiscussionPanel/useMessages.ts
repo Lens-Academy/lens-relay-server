@@ -5,6 +5,7 @@ export interface DiscordUser {
   username: string;
   global_name: string | null;
   avatar: string | null;
+  bot?: boolean;
 }
 
 export interface DiscordMessage {

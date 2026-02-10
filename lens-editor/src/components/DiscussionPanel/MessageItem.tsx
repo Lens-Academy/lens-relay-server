@@ -31,6 +31,11 @@ export function MessageItem({ message, showHeader }: MessageItemProps) {
               <span className="text-sm font-medium text-gray-900 truncate">
                 {displayName}
               </span>
+              {author.bot && (
+                <span className="inline-flex items-center px-1 py-0.5 rounded text-[10px] font-medium leading-none bg-[#5865F2] text-white flex-shrink-0">
+                  APP
+                </span>
+              )}
               <span className="text-xs text-gray-400 flex-shrink-0">
                 {formatTimestamp(timestamp)}
               </span>
