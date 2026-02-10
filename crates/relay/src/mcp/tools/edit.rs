@@ -1,15 +1,126 @@
 use crate::server::Server;
 use serde_json::Value;
 use std::sync::Arc;
-use yrs::{GetString, ReadTxn, Transact, WriteTxn};
+use yrs::{GetString, ReadTxn, Text, Transact, WriteTxn};
 
 /// Execute the `edit` tool: replace old_string with CriticMarkup-wrapped suggestion.
+///
+/// The edit is wrapped in CriticMarkup format `{--old--}{++new++}` so human
+/// collaborators can review and accept/reject the AI's proposed change.
 pub fn execute(
-    _server: &Arc<Server>,
-    _session_id: &str,
-    _arguments: &Value,
+    server: &Arc<Server>,
+    session_id: &str,
+    arguments: &Value,
 ) -> Result<String, String> {
-    Err("Not implemented yet".to_string())
+    // 1. Parse parameters
+    let file_path = arguments
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required parameter: file_path".to_string())?;
+
+    let old_string = arguments
+        .get("old_string")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required parameter: old_string".to_string())?;
+
+    let new_string = arguments
+        .get("new_string")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing required parameter: new_string".to_string())?;
+
+    // 2. Resolve document path to doc_id
+    let doc_info = server
+        .doc_resolver()
+        .resolve_path(file_path)
+        .ok_or_else(|| format!("Error: Document not found: {}", file_path))?;
+
+    // 3. Check read-before-edit: session must have read this document first
+    {
+        let session = server
+            .mcp_sessions
+            .get_session(session_id)
+            .ok_or_else(|| "Error: Session not found".to_string())?;
+        if !session.read_docs.contains(&doc_info.doc_id) {
+            return Err(format!(
+                "You must read this document before editing it. Call the read tool with file_path: \"{}\" first.",
+                file_path
+            ));
+        }
+        // Drop session guard before accessing Y.Doc
+    }
+
+    // 4. Read content and find old_string
+    let content = {
+        let doc_ref = server
+            .docs()
+            .get(&doc_info.doc_id)
+            .ok_or_else(|| format!("Error: Document data not loaded: {}", file_path))?;
+        let awareness = doc_ref.awareness();
+        let guard = awareness.read().unwrap();
+        let txn = guard.doc.transact();
+        match txn.get_text("contents") {
+            Some(text) => text.get_string(&txn),
+            None => return Err("Document has no content".to_string()),
+        }
+    };
+
+    // 5. Find old_string and check uniqueness
+    let matches: Vec<usize> = content
+        .match_indices(old_string)
+        .map(|(idx, _)| idx)
+        .collect();
+
+    if matches.is_empty() {
+        return Err(format!(
+            "Error: old_string not found in {}. Make sure it matches exactly.",
+            file_path
+        ));
+    }
+
+    if matches.len() > 1 {
+        return Err(format!(
+            "Error: old_string is not unique in {} ({} occurrences found). Include more surrounding context to make it unique.",
+            file_path,
+            matches.len()
+        ));
+    }
+
+    // 6. Build CriticMarkup replacement
+    let byte_offset = matches[0] as u32;
+    let old_len = old_string.len() as u32;
+    let replacement = format!("{{--{}--}}{{++{}++}}", old_string, new_string);
+
+    // 7. Apply edit in write transaction with TOCTOU re-verify
+    {
+        let doc_ref = server
+            .docs()
+            .get(&doc_info.doc_id)
+            .ok_or_else(|| format!("Error: Document data not loaded: {}", file_path))?;
+        let awareness = doc_ref.awareness();
+        let mut guard = awareness.write().unwrap();
+        let mut txn = guard.doc.transact_mut();
+        let text = txn.get_or_insert_text("contents");
+
+        // Re-verify: check old_string still at expected offset
+        let current_content = text.get_string(&txn);
+        let actual_slice =
+            current_content.get(byte_offset as usize..(byte_offset + old_len) as usize);
+        if actual_slice != Some(old_string) {
+            return Err(
+                "Document changed since last read. Please re-read and try again.".to_string(),
+            );
+        }
+
+        text.remove_range(&mut txn, byte_offset, old_len);
+        text.insert(&mut txn, byte_offset, &replacement);
+    }
+
+    // 8. Return success
+    Ok(format!(
+        "Edited {}: replaced {} characters with CriticMarkup suggestion for human review.",
+        file_path,
+        old_string.len()
+    ))
 }
 
 #[cfg(test)]
