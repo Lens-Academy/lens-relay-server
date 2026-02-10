@@ -9,7 +9,7 @@
 | # | Phase | Goal | Requirements | Plans (est.) |
 |---|-------|------|--------------|--------------|
 | 1 | Bridge + History Display | User sees Discord message history in a panel alongside the document | INFRA-01, INFRA-04, CHAN-01, CHAN-02, MSG-01, MSG-03, MSG-04, UX-01 | 3 plans |
-| 2 | Live Streaming | New Discord messages appear in the panel in real time | INFRA-02, MSG-02, MSG-05, MSG-06, MSG-07 | 2 |
+| 2 | Live Streaming | New Discord messages appear in the panel in real time | INFRA-02, MSG-02, MSG-05, MSG-06, MSG-07 | 3 plans |
 | 3 | Posting Messages | User can send messages to Discord from the editor panel | INFRA-03, POST-01, POST-02, POST-03 | 2 |
 | 4 | Connection Resilience | Panel handles network failures gracefully with clear feedback | UX-02, UX-03 | 1 |
 
@@ -35,6 +35,13 @@ Plans:
 ### Phase 2: Live Streaming
 **Goal:** After loading history, new messages posted in Discord appear in the panel in real time without page reload.
 **Requirements:** INFRA-02, MSG-02, MSG-05, MSG-06, MSG-07
+**Plans:** 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md -- Gateway connection manager + SSE endpoint (bridge-side)
+- [ ] 02-02-PLAN.md -- Discord markdown rendering (DiscordMarkdown component)
+- [ ] 02-03-PLAN.md -- SSE client, auto-scroll, new messages indicator (frontend)
+
 **Success Criteria:**
 1. A message posted in Discord appears in the panel within 2 seconds
 2. Messages render Discord-flavored markdown (bold, italic, code blocks, quotes, strikethrough)
