@@ -22,12 +22,15 @@ export interface DiscordChannel {
   type: number;
 }
 
+export type GatewayStatus = 'connected' | 'connecting' | 'disconnected' | 'reconnecting';
+
 interface UseMessagesResult {
   messages: DiscordMessage[];
   channelName: string | null;
   loading: boolean;
   error: string | null;
   refetch: () => void;
+  gatewayStatus: GatewayStatus;
 }
 
 /**
@@ -40,6 +43,7 @@ export function useMessages(channelId: string | null): UseMessagesResult {
   const [channelName, setChannelName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('disconnected');
   const abortRef = useRef<AbortController | null>(null);
   const [fetchTrigger, setFetchTrigger] = useState(0);
 
@@ -119,5 +123,48 @@ export function useMessages(channelId: string | null): UseMessagesResult {
     };
   }, [channelId, fetchTrigger]);
 
-  return { messages, channelName, loading, error, refetch };
+  // SSE subscription for live message streaming
+  useEffect(() => {
+    if (!channelId) {
+      setGatewayStatus('disconnected');
+      return;
+    }
+
+    const eventSource = new EventSource(`/api/discord/channels/${channelId}/events`);
+    setGatewayStatus('connecting');
+
+    eventSource.addEventListener('message', (e) => {
+      const newMsg: DiscordMessage = JSON.parse(e.data);
+      setMessages((prev) => {
+        // Dedup: skip if message ID already exists
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+    });
+
+    eventSource.addEventListener('status', (e) => {
+      const { gateway } = JSON.parse(e.data);
+      setGatewayStatus(gateway);
+    });
+
+    eventSource.addEventListener('heartbeat', () => {
+      // Heartbeat received, connection is alive. No action needed.
+    });
+
+    eventSource.onopen = () => {
+      setGatewayStatus('connected');
+    };
+
+    eventSource.onerror = () => {
+      // EventSource auto-reconnects. Update status for UI.
+      setGatewayStatus('reconnecting');
+    };
+
+    return () => {
+      eventSource.close();
+      setGatewayStatus('disconnected');
+    };
+  }, [channelId]);
+
+  return { messages, channelName, loading, error, refetch, gatewayStatus };
 }
