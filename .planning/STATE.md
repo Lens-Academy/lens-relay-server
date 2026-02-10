@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** AI assistants can find and work with the right documents across the knowledge base
-**Current focus:** Phase 2 - MCP Transport -- COMPLETE
+**Current focus:** Phase 3 - MCP Read-Only Tools -- IN PROGRESS
 
 ## Current Position
 
-Phase: 2 of 5 (MCP Transport) -- COMPLETE
-Plan: 2 of 2 in current phase (done)
-Status: Phase complete
-Last activity: 2026-02-08 -- Completed 02-02-PLAN.md (HTTP transport handler)
+Phase: 3 of 5 (MCP Read-Only Tools)
+Plan: 1 of 2 in current phase (done)
+Status: In progress
+Last activity: 2026-02-10 -- Completed 03-01-PLAN.md (DocumentResolver)
 
-Progress: [####......] 40%
+Progress: [#####.....] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: 12m
-- Total execution time: 0.8 hours
+- Total plans completed: 5
+- Average duration: 11m
+- Total execution time: 0.9 hours
 
 **By Phase:**
 
@@ -29,10 +29,11 @@ Progress: [####......] 40%
 |-------|-------|-------|----------|
 | 01-search-index | 2/2 | 36m | 18m |
 | 02-mcp-transport | 2/2 | 12m | 6m |
+| 03-mcp-read-only-tools | 1/2 | 6m | 6m |
 
 **Recent Trend:**
-- Last 5 plans: 6m, 30m, 7m, 5m
-- Trend: fast (MCP phase was lean -- protocol engine + HTTP wiring)
+- Last 5 plans: 6m, 5m, 7m, 6m, 6m
+- Trend: consistent ~6m for focused plans
 
 *Updated after each plan completion*
 
@@ -51,6 +52,9 @@ Recent decisions affecting current work:
 - Require initialized session only for tools/call, not ping or tools/list
 - HTTP 400 for missing session ID, HTTP 404 for unknown session ID (MCP spec)
 - JSON parse errors return HTTP 200 with JSON-RPC error body (protocol-level, not transport-level)
+- Test DocumentResolver against bare Y.Docs to avoid DocWithSyncKv async dependency
+- Dual update API: update_folder (server) + update_folder_from_doc (testable)
+- derive_folder_name centralizes folder naming convention
 
 ### Pending Todos
 
@@ -62,6 +66,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-08 21:50 UTC
-Stopped at: Completed Phase 2 (MCP Transport) -- both plans done
+Last session: 2026-02-10 11:13 UTC
+Stopped at: Completed 03-01-PLAN.md (DocumentResolver)
 Resume file: None
