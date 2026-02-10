@@ -90,7 +90,7 @@ pub fn extract_id_from_filemeta_entry(value: &Out, txn: &impl ReadTxn) -> Option
 }
 
 /// Read a backlinks array for a given target UUID from a backlinks_v0 Y.Map.
-fn read_backlinks_array(backlinks: &MapRef, txn: &impl ReadTxn, target_uuid: &str) -> Vec<String> {
+pub fn read_backlinks_array(backlinks: &MapRef, txn: &impl ReadTxn, target_uuid: &str) -> Vec<String> {
     backlinks
         .get(txn, target_uuid)
         .and_then(|v| {

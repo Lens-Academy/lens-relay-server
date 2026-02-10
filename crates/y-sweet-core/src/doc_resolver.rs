@@ -1,7 +1,7 @@
 use crate::doc_sync::DocWithSyncKv;
 use crate::link_indexer::{extract_id_from_filemeta_entry, find_all_folder_docs, parse_doc_id};
 use dashmap::DashMap;
-use yrs::{Doc, ReadTxn, Transact};
+use yrs::{Doc, Map, ReadTxn, Transact};
 
 /// Information about a resolved document.
 #[derive(Clone, Debug)]
@@ -50,52 +50,112 @@ impl DocumentResolver {
     ///
     /// Clears existing entries, then scans every folder doc's filemeta_v0 to build
     /// the bidirectional mapping. Called at startup after docs are loaded.
-    pub fn rebuild(&self, _docs: &DashMap<String, DocWithSyncKv>) {
-        // STUB: will be implemented in GREEN phase
+    pub fn rebuild(&self, docs: &DashMap<String, DocWithSyncKv>) {
+        self.path_to_doc.clear();
+        self.uuid_to_path.clear();
+
+        let folder_doc_ids = find_all_folder_docs(docs);
+
+        for (folder_idx, folder_doc_id) in folder_doc_ids.iter().enumerate() {
+            if let Some(doc_ref) = docs.get(folder_doc_id) {
+                let awareness = doc_ref.awareness();
+                let guard = awareness.read().unwrap();
+                self.rebuild_from_folder_doc(folder_doc_id, folder_idx, &guard.doc);
+            }
+        }
     }
 
     /// Core rebuild logic operating on a bare Y.Doc. Testable without DocWithSyncKv.
-    fn rebuild_from_folder_doc(&self, _folder_doc_id: &str, _folder_idx: usize, _doc: &Doc) {
-        // STUB: will be implemented in GREEN phase
+    fn rebuild_from_folder_doc(&self, folder_doc_id: &str, folder_idx: usize, doc: &Doc) {
+        let folder_name = derive_folder_name(folder_idx);
+        let relay_id = parse_doc_id(folder_doc_id)
+            .map(|(r, _)| r.to_string())
+            .unwrap_or_default();
+
+        let txn = doc.transact();
+        let Some(filemeta) = txn.get_map("filemeta_v0") else {
+            return;
+        };
+
+        for (path, value) in filemeta.iter(&txn) {
+            if let Some(uuid) = extract_id_from_filemeta_entry(&value, &txn) {
+                // Strip leading "/" from filemeta path, prepend folder name
+                let path_str: &str = &path;
+                let stripped = path_str.strip_prefix('/').unwrap_or(path_str);
+                let full_path = format!("{}/{}", folder_name, stripped);
+                let doc_id = format!("{}-{}", relay_id, uuid);
+
+                let info = DocInfo {
+                    uuid: uuid.clone(),
+                    relay_id: relay_id.clone(),
+                    folder_doc_id: folder_doc_id.to_string(),
+                    folder_name: folder_name.to_string(),
+                    doc_id,
+                };
+
+                self.uuid_to_path.insert(uuid, full_path.clone());
+                self.path_to_doc.insert(full_path, info);
+            }
+        }
     }
 
     /// Resolve a user-facing path to a DocInfo.
-    pub fn resolve_path(&self, _path: &str) -> Option<DocInfo> {
-        // STUB
-        None
+    pub fn resolve_path(&self, path: &str) -> Option<DocInfo> {
+        self.path_to_doc.get(path).map(|r| r.value().clone())
     }
 
     /// Get the user-facing path for a UUID.
-    pub fn path_for_uuid(&self, _uuid: &str) -> Option<String> {
-        // STUB
-        None
+    pub fn path_for_uuid(&self, uuid: &str) -> Option<String> {
+        self.uuid_to_path.get(uuid).map(|r| r.value().clone())
     }
 
     /// Get all registered document paths (for glob matching).
     pub fn all_paths(&self) -> Vec<String> {
-        // STUB
-        Vec::new()
+        self.path_to_doc.iter().map(|r| r.key().clone()).collect()
+    }
+
+    /// Remove all entries associated with a given folder_doc_id from both maps.
+    fn remove_folder_entries(&self, folder_doc_id: &str) {
+        let paths_to_remove: Vec<String> = self
+            .path_to_doc
+            .iter()
+            .filter(|r| r.value().folder_doc_id == folder_doc_id)
+            .map(|r| r.key().clone())
+            .collect();
+
+        for path in &paths_to_remove {
+            if let Some((_, info)) = self.path_to_doc.remove(path) {
+                self.uuid_to_path.remove(&info.uuid);
+            }
+        }
     }
 
     /// Update maps for a single folder doc. Removes all entries associated with
     /// the given folder_doc_id, then re-adds from current filemeta_v0.
     pub fn update_folder(
         &self,
-        _folder_doc_id: &str,
-        _folder_idx: usize,
-        _docs: &DashMap<String, DocWithSyncKv>,
+        folder_doc_id: &str,
+        folder_idx: usize,
+        docs: &DashMap<String, DocWithSyncKv>,
     ) {
-        // STUB
+        self.remove_folder_entries(folder_doc_id);
+
+        if let Some(doc_ref) = docs.get(folder_doc_id) {
+            let awareness = doc_ref.awareness();
+            let guard = awareness.read().unwrap();
+            self.rebuild_from_folder_doc(folder_doc_id, folder_idx, &guard.doc);
+        }
     }
 
     /// Update maps for a single folder using a bare Y.Doc (testable without DocWithSyncKv).
     pub fn update_folder_from_doc(
         &self,
-        _folder_doc_id: &str,
-        _folder_idx: usize,
-        _doc: &Doc,
+        folder_doc_id: &str,
+        folder_idx: usize,
+        doc: &Doc,
     ) {
-        // STUB
+        self.remove_folder_entries(folder_doc_id);
+        self.rebuild_from_folder_doc(folder_doc_id, folder_idx, doc);
     }
 }
 
