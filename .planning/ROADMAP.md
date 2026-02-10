@@ -70,15 +70,15 @@ Plans:
 **Depends on**: Phase 1 (search index), Phase 3 (tool infrastructure)
 **Requirements**: MCP-04, MCP-07, MCP-09
 **Success Criteria** (what must be TRUE):
-  1. An AI assistant can call search_documents with a query and receive ranked results with snippets (same quality as the HTTP API)
-  2. An AI assistant can call edit_document with old_string/new_string and the edit appears in the document wrapped in CriticMarkup (e.g., `{--old--}{++new++}`)
+  1. An AI assistant can call grep with a regex pattern and receive matching lines with file paths and line numbers
+  2. An AI assistant can call edit with old_string/new_string and the edit appears in the document wrapped in CriticMarkup (e.g., `{--old--}{++new++}`)
   3. Attempting to edit a document the session has not previously read is rejected with a clear error message
   4. CriticMarkup suggestions are visible to human collaborators in Obsidian and lens-editor for review
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md -- Grep tool (regex content search) + session read-tracking infrastructure (TDD)
+- [ ] 04-02-PLAN.md -- Edit tool with CriticMarkup wrapping and read-before-edit enforcement (TDD)
 
 ### Phase 5: Search UI
 **Goal**: Users of lens-editor can search across all documents and navigate to results without leaving the editor
