@@ -5,23 +5,24 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** AI assistants can find and work with the right documents across the knowledge base
-**Current focus:** Phase 4 - MCP Search & Edit Tools
+**Current focus:** Phase 4 complete - MCP Search & Edit Tools
+**Next:** Phase 5 - Integration Testing
 
 ## Current Position
 
 Phase: 4 of 5 (MCP Search & Edit Tools)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-02-10 -- Completed 04-01-PLAN.md (grep tool + session infrastructure)
+Plan: 2 of 2 in current phase
+Status: Phase complete
+Last activity: 2026-02-10 -- Completed 04-02-PLAN.md (edit tool with CriticMarkup)
 
-Progress: [#######...] 70%
+Progress: [########..] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: 11m
-- Total execution time: 1.3 hours
+- Total plans completed: 8
+- Average duration: 10m
+- Total execution time: 1.4 hours
 
 **By Phase:**
 
@@ -30,11 +31,11 @@ Progress: [#######...] 70%
 | 01-search-index | 2/2 | 36m | 18m |
 | 02-mcp-transport | 2/2 | 12m | 6m |
 | 03-mcp-read-only-tools | 2/2 | 21m | 10.5m |
-| 04-mcp-search-edit-tools | 1/2 | 13m | 13m |
+| 04-mcp-search-edit-tools | 2/2 | 20m | 10m |
 
 **Recent Trend:**
-- Last 5 plans: 7m, 6m, 6m, 15m, 13m
-- Trend: consistent ~6m for focused plans, 13-15m for TDD/integration plans
+- Last 5 plans: 6m, 6m, 15m, 13m, 7m
+- Trend: consistent ~6-7m for focused plans, 13-15m for complex TDD plans
 
 *Updated after each plan completion*
 
@@ -62,6 +63,9 @@ Recent decisions affecting current work:
 - Grep uses regex crate directly on Y.Doc text content -- precise ripgrep-compatible output
 - Test DocWithSyncKv creation via tokio block_on with None store -- avoids modifying y-sweet-core
 - session_id threaded through dispatch_tool for tool-level session awareness
+- CriticMarkup format: {--old--}{++new++} (deletion+insertion, not substitution syntax)
+- No replace_all for v1 -- single unique match required
+- TOCTOU re-verify in write transaction before applying edit
 
 ### Pending Todos
 
@@ -73,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-10 15:04 UTC
-Stopped at: Completed 04-01-PLAN.md (grep tool + session infrastructure)
+Last session: 2026-02-10 15:15 UTC
+Stopped at: Completed 04-02-PLAN.md (edit tool with CriticMarkup) -- Phase 4 complete
 Resume file: None
