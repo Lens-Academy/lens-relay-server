@@ -65,7 +65,7 @@ pub async fn handle_mcp_post(
             if req.method == "initialize" {
                 // Initialize does not require an existing session
                 let (resp, new_session_id) =
-                    router::dispatch_request(sessions, None, &req);
+                    router::dispatch_request(&server, None, &req);
 
                 let mut response = (StatusCode::OK, Json(resp)).into_response();
 
@@ -113,7 +113,7 @@ pub async fn handle_mcp_post(
                 }
 
                 let (resp, _) =
-                    router::dispatch_request(sessions, Some(&sid), &req);
+                    router::dispatch_request(&server, Some(&sid), &req);
 
                 (StatusCode::OK, Json(resp)).into_response()
             }

@@ -48,6 +48,7 @@ use y_sweet_core::{
         DebouncedSyncProtocolEventSender, DocumentUpdatedEvent, EventDispatcher, EventEnvelope,
         EventSender, SyncProtocolEventSender, UnifiedEventDispatcher, WebhookSender,
     },
+    doc_resolver::DocumentResolver,
     link_indexer::{self, LinkIndexer},
     metrics::RelayMetrics,
     search_index::SearchIndex,
@@ -437,6 +438,7 @@ pub struct Server {
     search_index: Option<Arc<SearchIndex>>,
     search_ready: Arc<std::sync::atomic::AtomicBool>,
     search_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    doc_resolver: Arc<DocumentResolver>,
     pub(crate) mcp_sessions: Arc<crate::mcp::session::SessionManager>,
 }
 
@@ -557,6 +559,44 @@ impl Server {
             search_index,
             search_ready,
             search_tx: search_tx_final,
+            doc_resolver: Arc::new(DocumentResolver::new()),
+            mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
+        })
+    }
+
+    /// Get the DocumentResolver for path-to-UUID resolution.
+    pub fn doc_resolver(&self) -> &Arc<DocumentResolver> {
+        &self.doc_resolver
+    }
+
+    /// Get the DashMap of all loaded documents.
+    pub fn docs(&self) -> &Arc<DashMap<String, DocWithSyncKv>> {
+        &self.docs
+    }
+
+    /// Create a minimal Server for testing. No store, no auth, no search.
+    #[cfg(test)]
+    pub fn new_for_test() -> Arc<Self> {
+        Arc::new(Self {
+            docs: Arc::new(DashMap::new()),
+            doc_worker_tracker: TaskTracker::new(),
+            store: None,
+            checkpoint_freq: Duration::from_secs(60),
+            authenticator: None,
+            url: None,
+            allowed_hosts: Vec::new(),
+            cancellation_token: CancellationToken::new(),
+            doc_gc: std::sync::atomic::AtomicBool::new(false),
+            event_dispatcher: None,
+            sync_protocol_event_sender: Arc::new(
+                y_sweet_core::event::SyncProtocolEventSender::new(),
+            ),
+            metrics: RelayMetrics::new().expect("metrics init should not fail in tests"),
+            link_indexer: None,
+            search_index: None,
+            search_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            search_tx: None,
+            doc_resolver: Arc::new(DocumentResolver::new()),
             mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
         })
     }
@@ -831,6 +871,13 @@ impl Server {
         if let Some(ref indexer) = self.link_indexer {
             indexer.reindex_all_backlinks(&self.docs)?;
         }
+
+        // Build document resolver (bidirectional path <-> UUID mapping)
+        self.doc_resolver.rebuild(&self.docs);
+        tracing::info!(
+            "Document resolver built: {} documents",
+            self.doc_resolver.all_paths().len()
+        );
 
         // Build search index from all loaded documents
         if let Some(ref search_index) = self.search_index {

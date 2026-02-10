@@ -39,6 +39,7 @@ p256 = "0.13.2"
 ed25519-dalek = { version = "2.1.1", features = ["pkcs8", "pem"] }
 sha2 = "0.10"
 tempfile = "3.8.1"
+glob-match = "0.2"
 
 [dev-dependencies]
 http = "1.1.0"

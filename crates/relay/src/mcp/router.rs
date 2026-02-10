@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tracing::debug;
 
 use super::jsonrpc::{
@@ -6,14 +7,17 @@ use super::jsonrpc::{
     INTERNAL_ERROR, METHOD_NOT_FOUND,
 };
 use super::session::SessionManager;
+use super::tools;
+use crate::server::Server;
 
 /// Dispatch a JSON-RPC request to the appropriate handler.
 /// Returns the response and an optional new session ID (set only for initialize).
 pub fn dispatch_request(
-    sessions: &SessionManager,
+    server: &Arc<Server>,
     session_id: Option<&str>,
     request: &JsonRpcRequest,
 ) -> (JsonRpcResponse, Option<String>) {
+    let sessions = &server.mcp_sessions;
     match request.method.as_str() {
         "initialize" => {
             let (resp, sid) =
@@ -27,7 +31,7 @@ pub fn dispatch_request(
                 return (err_resp, None);
             }
             (
-                handle_tools_call(sessions, session_id, request.id.clone(), request.params.as_ref()),
+                handle_tools_call(server, request.id.clone(), request.params.as_ref()),
                 None,
             )
         }
@@ -113,17 +117,37 @@ fn handle_ping(id: Value) -> JsonRpcResponse {
 }
 
 fn handle_tools_list(id: Value) -> JsonRpcResponse {
-    success_response(id, json!({ "tools": [] }))
+    let definitions = tools::tool_definitions();
+    success_response(id, json!({ "tools": definitions }))
 }
 
 fn handle_tools_call(
-    _sessions: &SessionManager,
-    _session_id: Option<&str>,
+    server: &Arc<Server>,
     id: Value,
-    _params: Option<&Value>,
+    params: Option<&Value>,
 ) -> JsonRpcResponse {
-    // Stub: no tools available yet (will be implemented in Phase 4)
-    error_response(id, INTERNAL_ERROR, "No tools available")
+    let (name, arguments) = match params {
+        Some(p) => {
+            let name = p
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let arguments = p
+                .get("arguments")
+                .cloned()
+                .unwrap_or(json!({}));
+            (name.to_string(), arguments)
+        }
+        None => {
+            return success_response(
+                id,
+                tools::dispatch_tool(server, "", &json!({})),
+            );
+        }
+    };
+
+    let result = tools::dispatch_tool(server, &name, &arguments);
+    success_response(id, result)
 }
 
 fn validate_session(
@@ -180,9 +204,14 @@ mod tests {
         }
     }
 
+    /// Create a minimal Server for testing (no store, no auth, no docs).
+    fn test_server() -> Arc<Server> {
+        Server::new_for_test()
+    }
+
     #[test]
     fn initialize_creates_session_and_returns_capabilities() {
-        let sessions = SessionManager::new();
+        let server = test_server();
         let req = make_request(
             json!(1),
             "initialize",
@@ -192,7 +221,7 @@ mod tests {
             })),
         );
 
-        let (resp, new_session_id) = dispatch_request(&sessions, None, &req);
+        let (resp, new_session_id) = dispatch_request(&server, None, &req);
 
         // Should return a new session ID
         let sid = new_session_id.expect("initialize should return session ID");
@@ -210,15 +239,15 @@ mod tests {
         assert!(result["serverInfo"]["version"].is_string());
 
         // Session should exist in manager
-        assert!(sessions.get_session(&sid).is_some());
+        assert!(server.mcp_sessions.get_session(&sid).is_some());
     }
 
     #[test]
     fn ping_returns_empty_result() {
-        let sessions = SessionManager::new();
+        let server = test_server();
         let req = make_request(json!(2), "ping", None);
 
-        let (resp, new_session_id) = dispatch_request(&sessions, None, &req);
+        let (resp, new_session_id) = dispatch_request(&server, None, &req);
 
         assert!(new_session_id.is_none());
         assert_eq!(resp.id, json!(2));
@@ -227,15 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_empty_array() {
-        let sessions = SessionManager::new();
+    fn tools_list_returns_three_tools() {
+        let server = test_server();
         let req = make_request(json!(3), "tools/list", None);
 
         // Create and initialize a session
-        let sid = sessions.create_session("2025-03-26".into(), None);
-        sessions.mark_initialized(&sid);
+        let sid = server.mcp_sessions.create_session("2025-03-26".into(), None);
+        server.mcp_sessions.mark_initialized(&sid);
 
-        let (resp, new_session_id) = dispatch_request(&sessions, Some(&sid), &req);
+        let (resp, new_session_id) = dispatch_request(&server, Some(&sid), &req);
 
         assert!(new_session_id.is_none());
         assert_eq!(resp.id, json!(3));
@@ -243,19 +272,29 @@ mod tests {
 
         let result = resp.result.unwrap();
         assert!(result["tools"].is_array());
-        assert_eq!(result["tools"].as_array().unwrap().len(), 0);
+        let tools_arr = result["tools"].as_array().unwrap();
+        assert_eq!(tools_arr.len(), 3);
+
+        // Verify tool names
+        let names: Vec<&str> = tools_arr
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"get_links"));
     }
 
     #[test]
     fn tools_call_without_session_returns_error() {
-        let sessions = SessionManager::new();
+        let server = test_server();
         let req = make_request(
             json!(4),
             "tools/call",
-            Some(json!({"name": "search", "arguments": {"query": "test"}})),
+            Some(json!({"name": "read", "arguments": {"file_path": "test"}})),
         );
 
-        let (resp, _) = dispatch_request(&sessions, None, &req);
+        let (resp, _) = dispatch_request(&server, None, &req);
 
         assert!(resp.result.is_none());
         let err = resp.error.expect("should have error");
@@ -268,35 +307,33 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_with_initialized_session_returns_no_tools_error() {
-        let sessions = SessionManager::new();
-        let sid = sessions.create_session("2025-03-26".into(), None);
-        sessions.mark_initialized(&sid);
+    fn tools_call_unknown_tool_returns_tool_error() {
+        let server = test_server();
+        let sid = server.mcp_sessions.create_session("2025-03-26".into(), None);
+        server.mcp_sessions.mark_initialized(&sid);
 
         let req = make_request(
             json!(5),
             "tools/call",
-            Some(json!({"name": "search", "arguments": {"query": "test"}})),
+            Some(json!({"name": "nonexistent_tool", "arguments": {}})),
         );
 
-        let (resp, _) = dispatch_request(&sessions, Some(&sid), &req);
+        let (resp, _) = dispatch_request(&server, Some(&sid), &req);
 
-        assert!(resp.result.is_none());
-        let err = resp.error.expect("should have error");
-        assert!(
-            err.message.to_lowercase().contains("no tools")
-                || err.message.to_lowercase().contains("not available"),
-            "error should mention no tools: {}",
-            err.message
-        );
+        // Should be a successful JSON-RPC response with isError in the result
+        assert!(resp.error.is_none());
+        let result = resp.result.expect("should have result");
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Unknown tool"));
     }
 
     #[test]
     fn unknown_method_returns_method_not_found() {
-        let sessions = SessionManager::new();
+        let server = test_server();
         let req = make_request(json!(6), "foo/bar", None);
 
-        let (resp, new_session_id) = dispatch_request(&sessions, None, &req);
+        let (resp, new_session_id) = dispatch_request(&server, None, &req);
 
         assert!(new_session_id.is_none());
         assert!(resp.result.is_none());
@@ -307,37 +344,39 @@ mod tests {
 
     #[test]
     fn notifications_initialized_marks_session() {
-        let sessions = SessionManager::new();
+        let server = test_server();
+        let sessions = &server.mcp_sessions;
         let sid = sessions.create_session("2025-03-26".into(), None);
         assert!(!sessions.get_session(&sid).unwrap().initialized);
 
         let notif = make_notification("notifications/initialized", None);
-        handle_notification(&sessions, Some(&sid), &notif);
+        handle_notification(sessions, Some(&sid), &notif);
 
         assert!(sessions.get_session(&sid).unwrap().initialized);
     }
 
     #[test]
     fn notifications_cancelled_is_noop() {
-        let sessions = SessionManager::new();
+        let server = test_server();
+        let sessions = &server.mcp_sessions;
         let notif = make_notification("notifications/cancelled", Some(json!({"requestId": 1})));
         // Should not panic
-        handle_notification(&sessions, None, &notif);
+        handle_notification(sessions, None, &notif);
     }
 
     #[test]
     fn tools_call_with_uninitialized_session_returns_error() {
-        let sessions = SessionManager::new();
-        let sid = sessions.create_session("2025-03-26".into(), None);
+        let server = test_server();
+        let sid = server.mcp_sessions.create_session("2025-03-26".into(), None);
         // Not calling mark_initialized -- session exists but is not initialized
 
         let req = make_request(
             json!(7),
             "tools/call",
-            Some(json!({"name": "search", "arguments": {}})),
+            Some(json!({"name": "read", "arguments": {}})),
         );
 
-        let (resp, _) = dispatch_request(&sessions, Some(&sid), &req);
+        let (resp, _) = dispatch_request(&server, Some(&sid), &req);
 
         assert!(resp.result.is_none());
         let err = resp.error.expect("should have error");
