@@ -1,9 +1,20 @@
+import fm from 'front-matter';
+
 export interface DocFrontmatter {
   discussion?: string;
   [key: string]: unknown;
 }
 
-export function extractFrontmatter(_text: string): DocFrontmatter | null {
-  // STUB: returns wrong value for RED phase
-  return { stub: true };
+/**
+ * Extract frontmatter attributes from a markdown string.
+ * Returns null if the text has no valid frontmatter delimiters.
+ */
+export function extractFrontmatter(text: string): DocFrontmatter | null {
+  if (!fm.test(text)) return null;
+  try {
+    const { attributes } = fm<DocFrontmatter>(text);
+    return attributes;
+  } catch {
+    return null;
+  }
 }

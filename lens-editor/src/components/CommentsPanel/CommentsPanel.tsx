@@ -4,6 +4,7 @@ import type { EditorView } from '@codemirror/view';
 import { useComments } from './useComments';
 import { AddCommentForm } from './AddCommentForm';
 import { getCurrentAuthor } from '../Editor/extensions/criticmarkup';
+import { formatTimestamp } from '../../lib/format-timestamp';
 import type { CriticMarkupRange, CommentThread as CommentThreadType } from '../../lib/criticmarkup-parser';
 
 interface CommentsPanelProps {
@@ -34,31 +35,6 @@ function insertCommentAt(view: EditorView, content: string, pos: number): void {
 
   view.dispatch({
     changes: { from: pos, insert: markup },
-  });
-}
-
-/**
- * Format a timestamp for display.
- * Uses relative time for recent, absolute for older.
- */
-function formatTimestamp(timestamp: number): string {
-  const now = Date.now();
-  const diff = now - timestamp;
-
-  // Less than 1 minute
-  if (diff < 60000) return 'just now';
-  // Less than 1 hour
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  // Less than 1 day
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  // Less than 7 days
-  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
-
-  // Older - show date
-  return new Date(timestamp).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: timestamp < now - 31536000000 ? 'numeric' : undefined,
   });
 }
 
