@@ -53,15 +53,17 @@ export function MessageList({ messages }: MessageListProps) {
   }
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-y-auto relative">
-      {messages.map((msg, i) => (
-        <MessageItem
-          key={msg.id}
-          message={msg}
-          showHeader={shouldShowHeader(msg, i > 0 ? messages[i - 1] : null)}
-        />
-      ))}
-      <div ref={sentinelRef} className="h-1" />
+    <div className="flex-1 relative">
+      <div ref={containerRef} className="absolute inset-0 overflow-y-auto">
+        {messages.map((msg, i) => (
+          <MessageItem
+            key={msg.id}
+            message={msg}
+            showHeader={shouldShowHeader(msg, i > 0 ? messages[i - 1] : null)}
+          />
+        ))}
+        <div ref={sentinelRef} className="h-1" />
+      </div>
       <NewMessagesBar count={unseenCount} onClick={scrollToBottom} />
     </div>
   );

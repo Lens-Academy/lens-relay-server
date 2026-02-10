@@ -96,7 +96,7 @@ export function BacklinksPanel({ currentDocId }: BacklinksPanelProps) {
           <li key={navId}>
             <button
               onClick={() => onNavigate(navId)}
-              className="w-full text-left px-2 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors"
+              className="w-full text-left px-2 py-1 text-sm text-gray-700 hover:bg-gray-100 rounded transition-colors cursor-pointer"
             >
               {displayName}
             </button>
