@@ -10,7 +10,7 @@
 |---|-------|------|--------------|--------------|
 | 1 | Bridge + History Display | User sees Discord message history in a panel alongside the document | INFRA-01, INFRA-04, CHAN-01, CHAN-02, MSG-01, MSG-03, MSG-04, UX-01 | 3 plans |
 | 2 | Live Streaming | New Discord messages appear in the panel in real time | INFRA-02, MSG-02, MSG-05, MSG-06, MSG-07 | 3 plans |
-| 3 | Posting Messages | User can send messages to Discord from the editor panel | INFRA-03, POST-01, POST-02, POST-03 | 2 |
+| 3 | Posting Messages | User can send messages to Discord from the editor panel | INFRA-03, POST-01, POST-02, POST-03 | 3 plans |
 | 4 | Connection Resilience | Panel handles network failures gracefully with clear feedback | UX-02, UX-03 | 1 |
 
 ## Phase Details
@@ -51,6 +51,13 @@ Plans:
 ### Phase 3: Posting Messages
 **Goal:** User can send messages to the Discord channel from within the editor panel using a self-reported display name.
 **Requirements:** INFRA-03, POST-01, POST-02, POST-03
+**Plans:** 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md -- Webhook proxy endpoint in discord-bridge (INFRA-03, POST-03)
+- [ ] 03-02-PLAN.md -- Display name identity system with modal and badge (POST-02)
+- [ ] 03-03-PLAN.md -- Compose box and send integration (POST-01)
+
 **Success Criteria:**
 1. User enters a display name once and it persists across browser sessions
 2. User types a message and presses Enter/Send; the message appears in Discord and echoes back to the panel
