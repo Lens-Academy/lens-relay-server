@@ -24,3 +24,9 @@ export interface DiscordChannel {
   name: string;
   type: number;
 }
+
+export interface WebhookPayload {
+  content: string;
+  username: string;
+  avatar_url?: string;
+}
