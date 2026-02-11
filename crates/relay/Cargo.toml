@@ -41,6 +41,7 @@ sha2 = "0.10"
 tempfile = "3.8.1"
 glob-match = "0.2"
 regex = "1"
+similar = "2"
 
 [dev-dependencies]
 http = "1.1.0"

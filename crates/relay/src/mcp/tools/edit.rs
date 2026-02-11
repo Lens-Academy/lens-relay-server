@@ -85,10 +85,19 @@ pub fn execute(
         ));
     }
 
-    // 6. Build CriticMarkup replacement
+    // 6. Build CriticMarkup replacement with metadata
     let byte_offset = matches[0] as u32;
     let old_len = old_string.len() as u32;
-    let replacement = format!("{{--{}--}}{{++{}++}}", old_string, new_string);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let meta_prefix = format!(
+        r#"{{"author":"AI","timestamp":{}}}@@"#,
+        timestamp
+    );
+    let replacement =
+        super::critic_diff::smart_critic_markup(old_string, new_string, Some(&meta_prefix));
 
     // 7. Apply edit in write transaction with TOCTOU re-verify
     {
@@ -242,12 +251,32 @@ mod tests {
 
         assert!(result.is_ok(), "edit should succeed, got: {:?}", result);
 
-        // Verify the Y.Doc content was actually modified with CriticMarkup
+        // Verify the Y.Doc content was actually modified with CriticMarkup + metadata
         let content = read_doc_content(&server, &doc_id);
-        assert_eq!(
-            content,
-            "say {--hello--}{++world++} to all",
-            "Document should contain CriticMarkup wrapping"
+        // Metadata is dynamic (timestamp), so check structure not exact string
+        assert!(
+            content.contains("{--") && content.contains("--}"),
+            "Should contain deletion markup: {}", content
+        );
+        assert!(
+            content.contains("{++") && content.contains("++}"),
+            "Should contain insertion markup: {}", content
+        );
+        assert!(
+            content.contains(r#""author":"AI""#),
+            "Should contain author metadata: {}", content
+        );
+        assert!(
+            content.contains("@@hello--}"),
+            "Deletion should contain old text after @@: {}", content
+        );
+        assert!(
+            content.contains("@@world++}"),
+            "Insertion should contain new text after @@: {}", content
+        );
+        assert!(
+            content.starts_with("say ") && content.ends_with(" to all"),
+            "Surrounding text should be preserved: {}", content
         );
     }
 
@@ -402,10 +431,17 @@ mod tests {
         assert!(result.is_ok(), "edit should succeed, got: {:?}", result);
 
         let content = read_doc_content(&server, &doc_id);
-        assert_eq!(
-            content,
-            "line 1\n{--line 2--}{++modified line 2++}\nline 3",
-            "Surrounding content should be preserved"
+        assert!(
+            content.starts_with("line 1\n{++"),
+            "Should start with line 1 then insertion markup: {}", content
+        );
+        assert!(
+            content.contains("@@modified "),
+            "Insertion should contain 'modified ' after @@: {}", content
+        );
+        assert!(
+            content.ends_with("line 2\nline 3"),
+            "Should preserve surrounding content: {}", content
         );
     }
 
@@ -426,10 +462,21 @@ mod tests {
         assert!(result.is_ok(), "multiline edit should succeed, got: {:?}", result);
 
         let content = read_doc_content(&server, &doc_id);
-        assert_eq!(
-            content,
-            "line 1\n{--line 2\nline 3--}{++replaced lines++}\nline 4",
-            "Multiline CriticMarkup should wrap the entire string"
+        assert!(
+            content.starts_with("line 1\n{--"),
+            "Should start with line 1 then deletion markup: {}", content
+        );
+        assert!(
+            content.contains("@@line 2\nline 3--}"),
+            "Deletion should wrap multiline old text: {}", content
+        );
+        assert!(
+            content.contains("@@replaced lines++}"),
+            "Insertion should contain new text: {}", content
+        );
+        assert!(
+            content.ends_with("\nline 4"),
+            "Should preserve trailing content: {}", content
         );
     }
 
@@ -450,10 +497,17 @@ mod tests {
         assert!(result.is_ok(), "deletion edit should succeed, got: {:?}", result);
 
         let content = read_doc_content(&server, &doc_id);
-        assert_eq!(
-            content,
-            "keep {--delete me--}{++++} keep",
-            "Empty new_string should produce valid CriticMarkup"
+        assert!(
+            content.starts_with("keep {--") && content.ends_with("--} keep"),
+            "Should wrap deletion with surrounding text preserved: {}", content
+        );
+        assert!(
+            content.contains("@@delete me--}"),
+            "Deletion should contain old text after @@: {}", content
+        );
+        assert!(
+            !content.contains("{++"),
+            "Pure deletion should not have insertion markup: {}", content
         );
     }
 

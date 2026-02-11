@@ -1,3 +1,4 @@
+pub mod critic_diff;
 pub mod edit;
 pub mod get_links;
 pub mod glob;
