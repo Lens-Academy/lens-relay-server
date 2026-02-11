@@ -2,9 +2,9 @@
   "mcpServers": {
     "lens-relay": {
       "type": "http",
-      "url": "http://localhost:8090/mcp",
+      "url": "https://relay.lensacademy.org/mcp",
       "headers": {
-        "Authorization": "Bearer test-local-key"
+        "Authorization": "Bearer ${MCP_API_KEY}"
       }
     }
   }

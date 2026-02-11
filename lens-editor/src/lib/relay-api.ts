@@ -255,7 +255,7 @@ export async function searchDocuments(
   signal?: AbortSignal
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({ q: query, limit: String(limit) });
-  const response = await fetch(`${API_BASE}/search?${params}`, { signal });
+  const response = await fetch(`/api/relay/search?${params}`, { signal });
   if (!response.ok) {
     throw new Error(`Search failed: ${response.status}`);
   }
