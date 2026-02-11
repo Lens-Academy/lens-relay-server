@@ -1,9 +1,11 @@
-import { useState, useDeferredValue, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useDeferredValue, useMemo, useCallback } from 'react';
 import { SearchInput } from './SearchInput';
+import { SearchPanel } from './SearchPanel';
 import { FileTree } from './FileTree';
 import { FileTreeProvider } from './FileTreeContext';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useNavigation } from '../../contexts/NavigationContext';
+import { useSearch } from '../../hooks/useSearch';
 import { buildTreeFromPaths, filterTree } from '../../lib/tree-utils';
 import { createDocument, renameDocument, deleteDocument } from '../../lib/relay-api';
 import { getFolderDocForPath, getOriginalPath, getFolderNameFromPath } from '../../lib/multi-folder-utils';
@@ -28,15 +30,33 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newDocName, setNewDocName] = useState('');
 
+  // Ref for Ctrl+K keyboard shortcut focus
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // Get metadata from NavigationContext (lifted to App level)
-  const { metadata, folderDocs, folderNames } = useNavigation();
+  const { metadata, folderDocs, folderNames, onNavigate } = useNavigation();
+
+  // Server-side full-text search (activates when searchTerm >= 2 chars)
+  const { results: searchResults, loading: searchLoading, error: searchError } = useSearch(searchTerm);
+
+  // Ctrl+K / Cmd+K keyboard shortcut to focus search input
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
 
   // Build tree from metadata
   const treeData = useMemo(() => {
     return buildTreeFromPaths(metadata);
   }, [metadata]);
 
-  // Filter tree based on search
+  // Filter tree based on search (used when searchTerm < 2 chars)
   const filteredTree = useMemo(() => {
     if (!deferredSearch) return treeData;
     return filterTree(treeData, deferredSearch);
@@ -44,6 +64,9 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
 
   // Visual feedback while filtering is processing
   const isStale = searchTerm !== deferredSearch;
+
+  // Whether to show server-side search results vs file tree
+  const showSearchResults = searchTerm.trim().length >= 2;
 
   // Build compound doc ID and call parent handler
   const handleSelect = useCallback((docId: string) => {
@@ -142,52 +165,65 @@ export function Sidebar({ activeDocId, onSelectDocument }: SidebarProps) {
         )}
 
         <SearchInput
+          ref={searchInputRef}
           value={searchTerm}
           onChange={setSearchTerm}
-          placeholder="Filter documents..."
+          placeholder="Search..."
         />
       </div>
 
-      {/* Tree content */}
-      <div className={`flex-1 overflow-y-auto ${isStale ? 'opacity-80' : ''}`}>
-        {/* Loading state: no doc yet or empty metadata */}
-        {folderDocs.size === 0 && Object.keys(metadata).length === 0 && (
-          <div className="p-4 text-sm text-gray-500">
-            Loading documents...
-          </div>
-        )}
-
-        {filteredTree.length === 0 && folderDocs.size > 0 && (
-          <div className="p-4 text-sm text-gray-500 text-center">
-            {searchTerm ? (
-              'No matching documents'
-            ) : (
-              <>
-                No documents yet.
-                <br />
-                Click &ldquo;New Document&rdquo; to create one.
-              </>
+      {/* Tree content or search results */}
+      <div className={`flex-1 overflow-y-auto ${isStale && !showSearchResults ? 'opacity-80' : ''}`}>
+        {showSearchResults ? (
+          <SearchPanel
+            results={searchResults}
+            loading={searchLoading}
+            error={searchError}
+            query={searchTerm}
+            onNavigate={onNavigate}
+          />
+        ) : (
+          <>
+            {/* Loading state: no doc yet or empty metadata */}
+            {folderDocs.size === 0 && Object.keys(metadata).length === 0 && (
+              <div className="p-4 text-sm text-gray-500">
+                Loading documents...
+              </div>
             )}
-          </div>
-        )}
 
-        {filteredTree.length > 0 && (
-          <FileTreeProvider
-            value={{
-              editingPath,
-              onEditingChange: setEditingPath,
-              onRequestRename: (path) => setEditingPath(path),
-              onRequestDelete: (path, name) => setDeleteTarget({ path, name }),
-              onRenameSubmit: handleRenameSubmit,
-              activeDocId,
-            }}
-          >
-            <FileTree
-              data={filteredTree}
-              onSelect={handleSelect}
-              openAll={!!deferredSearch}
-            />
-          </FileTreeProvider>
+            {filteredTree.length === 0 && folderDocs.size > 0 && (
+              <div className="p-4 text-sm text-gray-500 text-center">
+                {searchTerm ? (
+                  'No matching documents'
+                ) : (
+                  <>
+                    No documents yet.
+                    <br />
+                    Click &ldquo;New Document&rdquo; to create one.
+                  </>
+                )}
+              </div>
+            )}
+
+            {filteredTree.length > 0 && (
+              <FileTreeProvider
+                value={{
+                  editingPath,
+                  onEditingChange: setEditingPath,
+                  onRequestRename: (path) => setEditingPath(path),
+                  onRequestDelete: (path, name) => setDeleteTarget({ path, name }),
+                  onRenameSubmit: handleRenameSubmit,
+                  activeDocId,
+                }}
+              >
+                <FileTree
+                  data={filteredTree}
+                  onSelect={handleSelect}
+                  openAll={!!deferredSearch}
+                />
+              </FileTreeProvider>
+            )}
+          </>
         )}
       </div>
 

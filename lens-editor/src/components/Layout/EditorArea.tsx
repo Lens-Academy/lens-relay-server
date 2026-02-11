@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { EditorView } from '@codemirror/view';
 import { SyncStatus } from '../SyncStatus/SyncStatus';
 import { Editor } from '../Editor/Editor';
+import { DocumentTitle } from '../DocumentTitle';
 import { SourceModeToggle } from '../SourceModeToggle/SourceModeToggle';
 import { SuggestionModeToggle } from '../SuggestionModeToggle/SuggestionModeToggle';
 import { PresencePanel } from '../PresencePanel/PresencePanel';
@@ -11,6 +12,7 @@ import { CommentsPanel } from '../CommentsPanel';
 import { DebugYMapPanel } from '../DebugYMapPanel';
 import { ConnectedDiscussionPanel } from '../DiscussionPanel';
 import { useNavigation } from '../../contexts/NavigationContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 /**
  * Editor area component that lives INSIDE the RelayProvider key boundary.
@@ -21,6 +23,7 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [stateVersion, setStateVersion] = useState(0);
   const { metadata, onNavigate } = useNavigation();
+  const { canWrite } = useAuth();
 
   // Callback to receive view reference from Editor
   const handleEditorReady = useCallback((view: EditorView) => {
@@ -50,13 +53,20 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
       {/* Editor + Sidebars container */}
       <div className="flex-1 flex min-h-0">
         {/* Editor */}
-        <div className="flex-1 px-4 py-6 min-w-0 overflow-auto">
-          <Editor
-            onEditorReady={handleEditorReady}
-            onDocChange={handleDocChange}
-            onNavigate={onNavigate}
-            metadata={metadata}
-          />
+        <div className="flex-1 flex flex-col min-w-0 bg-white">
+          <div className="px-6 pt-5 pb-1">
+            <DocumentTitle currentDocId={currentDocId} />
+          </div>
+          <div className="mx-6 border-b border-gray-200" />
+          <div className="flex-1 min-h-0">
+            <Editor
+              readOnly={!canWrite}
+              onEditorReady={handleEditorReady}
+              onDocChange={handleDocChange}
+              onNavigate={onNavigate}
+              metadata={metadata}
+            />
+          </div>
         </div>
         {/* Right Sidebars */}
         <aside className="w-64 flex-shrink-0 border-l border-gray-200 bg-white flex flex-col">

@@ -4,4 +4,5 @@ pub mod cli;
 pub mod convert;
 pub mod server;
 pub mod stores;
+pub mod mcp;
 pub mod webhook;

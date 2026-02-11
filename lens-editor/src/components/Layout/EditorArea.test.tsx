@@ -17,6 +17,16 @@ vi.mock('../../contexts/NavigationContext', () => ({
   }),
 }));
 
+// Mock DocumentTitle to avoid metadata dependency
+vi.mock('../DocumentTitle', () => ({
+  DocumentTitle: () => <div data-testid="mock-document-title">Title</div>,
+}));
+
+// Mock AuthContext used by EditorArea
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ canWrite: true, role: 'editor' }),
+}));
+
 // Mock the Editor component to avoid Y.Doc complexity
 vi.mock('../Editor/Editor', () => ({
   Editor: ({ onEditorReady }: { onEditorReady?: (view: unknown) => void }) => {

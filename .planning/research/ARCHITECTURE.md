@@ -1,505 +1,476 @@
-# Architecture: Discord-to-Browser Bridge
+# Architecture Research: MCP Server + Search Index Integration
 
-**Domain:** Real-time Discord chat integration in a web editor
+**Domain:** MCP server and keyword search for CRDT document system
 **Researched:** 2026-02-08
-**Overall confidence:** HIGH
+**Confidence:** HIGH (based on deep codebase analysis + verified external research)
 
-## Executive Summary
+## Existing System Architecture
 
-The Discord discussion panel requires a bridge service that connects the Discord Gateway (for live message streaming) to browser clients (for display and interaction). After analyzing the existing codebase, Discord API constraints, and real-time communication patterns, the recommended architecture is a **standalone Node.js sidecar service** that maintains a single Discord Gateway connection and fans out events to browser clients via **Server-Sent Events (SSE)**. Webhook posting flows through this same sidecar as a simple HTTP proxy, keeping the Discord webhook URL server-side.
+Before recommending new component boundaries, here is a precise map of what exists.
 
-This architecture keeps the Rust relay server untouched, avoids adding a second WebSocket protocol to the browser client, and cleanly separates concerns between document sync (existing yjs/WebSocket) and chat display (new SSE stream).
+```
+                    Cloudflare R2
+                    (lens-relay-storage)
+                         |
+                    S3Store (rusty-s3)
+                         |
+  Clients ---------- relay-server (Rust, Axum, port 8080) ---------- Webhooks
+  (Obsidian,         |           |           |                       (relay-git-sync)
+   lens-editor,      |           |           |
+   Python SDK)       |           |           |
+                     |           |           |
+              DashMap<String,    LinkIndexer  EventDispatcher
+              DocWithSyncKv>     (backlinks)  (webhook + sync-proto)
+                     |
+              DocWithSyncKv
+              |-- Awareness(Y.Doc)    <-- in-memory CRDT
+              |-- SyncKv              <-- persistence layer
+              |-- Subscription        <-- update observer
+```
+
+### Key Data Structures in Y.Docs
+
+Each document has a Y.Doc containing:
+- **Content docs:** `Y.Text("contents")` -- markdown content
+- **Folder docs:** `Y.Map("filemeta_v0")` -- path-to-UUID mapping, `Y.Map("backlinks_v0")` -- UUID-to-backlinker-UUIDs
+
+### Existing Access Patterns
+
+| Access Method | How It Works | Auth |
+|---------------|-------------|------|
+| WebSocket (yjs sync) | `GET /doc/ws/:doc_id` or `/d/:doc_id/ws/:doc_id2` | Doc token in query param |
+| HTTP get-as-update | `GET /d/:doc_id/as-update` | Bearer doc token |
+| HTTP update | `POST /d/:doc_id/update` | Bearer doc token (Full auth) |
+| Server API (create, auth) | `POST /doc/new`, `POST /doc/:doc_id/auth` | Bearer server token |
+| Python SDK | Uses HTTP API: `get_as_update()` + `update_doc()` via `pycrdt` | Server token -> doc token |
+
+### Memory Model (Critical Constraint)
+
+The relay server holds **all loaded documents in memory** as Y.Docs inside `DashMap<String, DocWithSyncKv>`. On a 4GB VPS:
+
+- Each Y.Doc occupies memory proportional to document content + edit history
+- `load_all_docs()` loads every document from R2 on startup for backlink reindexing
+- Typical corpus: ~100-200 markdown documents across 2 shared folders
+- Estimated memory per doc: 10-100KB (small markdown files with moderate history)
+- Total doc memory: ~10-20MB (manageable)
+- Server process + tokio runtime + HTTP: ~50-100MB
+- **Available for search index: ~3.5GB** (plenty for a corpus this small)
 
 ## Recommended Architecture
 
+### Decision: Separate MCP Server, Search Index Inside Relay
+
 ```
-                                        Discord API
-                                       /          \
-                              Gateway WS        REST API
-                              (receive)        (history + webhooks)
-                                 |                  |
-                    +------------+------------------+------------+
-                    |        discord-bridge (Node.js sidecar)    |
-                    |                                            |
-                    |  - discord.js Client (Gateway connection)  |
-                    |  - Channel subscription registry           |
-                    |  - SSE broadcast server (HTTP)             |
-                    |  - Webhook proxy endpoint (HTTP)           |
-                    |  - Message history proxy endpoint (HTTP)   |
-                    +-----+--------------------+--------+--------+
-                          |                    |        |
-                       SSE stream         POST /send  GET /history
-                     (live events)       (webhook)   (REST proxy)
-                          |                    |        |
-              +-----------+--------------------+--------+---------+
-              |              lens-editor (Browser)                |
-              |                                                   |
-              |  Existing:                  New:                  |
-              |  - YDocProvider (WS)        - useDiscordChat()    |
-              |  - Editor, Sidebar          - DiscordPanel        |
-              |  - CommentsPanel            - EventSource client  |
-              |  - BacklinksPanel           - POST to /send       |
-              +---------+-----------------------------------------+
-                        |
-                   WebSocket (yjs sync, unchanged)
-                        |
-              +---------+---------+
-              |   relay-server    |
-              |   (Rust/Axum)     |
-              +-------------------+
+                         Cloudflare R2
+                              |
+                         relay-server (Rust, Axum)
+                         |    |    |    |
+                   DashMap  LinkIdx  SearchIdx  HTTP API
+                   (docs)  (backlinks) (tantivy) (new endpoints)
+                                                  |
+                                           /search
+                                           /docs (list)
+                                           /docs/:id/content
+                                           /docs/:id/backlinks
+                                                  |
+                         MCP Server (Python, stdio)
+                         |         |
+                   relay_sdk    mcp SDK
+                   (existing)  (FastMCP)
+                         |
+                    Claude Code / Claude Desktop
 ```
 
-## Component Boundaries
+### Component Boundaries
 
-| Component | Responsibility | Communicates With | Technology |
-|-----------|---------------|-------------------|------------|
-| **discord-bridge** | Discord Gateway connection, SSE fan-out, webhook proxy, history proxy | Discord API, browser clients | Node.js, discord.js, native HTTP server |
-| **lens-editor** (existing) | Document editing, yjs sync, UI rendering | relay-server (WebSocket), discord-bridge (SSE + HTTP) | React 19, TypeScript, Vite |
-| **relay-server** (existing) | CRDT document sync, auth, file storage | lens-editor (WebSocket), cloud storage | Rust, Axum |
-| **DiscordPanel** (new React component) | Chat display, message compose, frontmatter detection | discord-bridge via SSE + fetch | React, TypeScript |
+| Component | Language | Responsibility | Communicates With |
+|-----------|----------|----------------|-------------------|
+| **relay-server** | Rust | Document storage, sync, auth, search index, HTTP API | R2, clients (WS), MCP server (HTTP) |
+| **Search index** | Rust (tantivy, embedded) | Full-text indexing of document contents | Embedded in relay-server, reads Y.Docs |
+| **MCP server** | Python | MCP protocol, tool definitions, LLM interface | relay-server (HTTP API), Claude (stdio) |
+| **Python SDK** | Python | HTTP client for relay API | relay-server (HTTP) |
 
-### Why a Separate Node.js Service (Not Embedded in Rust)
+### Rationale for Key Decisions
 
-| Factor | Separate Node.js | Embedded in Rust relay |
-|--------|-----------------|----------------------|
-| Discord library maturity | discord.js is battle-tested, actively maintained, handles gateway reconnection/heartbeat/sharding automatically | Rust Discord libraries (serenity, twilight) are capable but have smaller ecosystems; adding gateway management to the relay server increases its complexity |
-| Deployment independence | Can restart/update the bridge without touching document sync | Any bridge crash could affect document sync |
-| Existing relay server scope | Relay server is an upstream fork with minimal custom changes; adding Discord concerns makes future upstream merges harder | Tighter coupling |
-| Development velocity | JavaScript/TypeScript is the same language as the frontend, easier to iterate | Rust compile times, different skill set |
-| Operational risk | Bridge failure only affects Discord panel; documents continue working | Gateway reconnection storms could impact relay server performance |
+#### Why embed search in relay-server (not standalone)
 
-**Recommendation:** Separate Node.js sidecar. HIGH confidence -- the operational isolation is the strongest argument.
+1. **The relay already holds all Y.Docs in memory.** The search indexer needs to read document content. If search runs as a separate service, it would need to either (a) maintain its own copy of every document via WebSocket connections, or (b) call HTTP to fetch each document's content. Both waste resources on a 4GB VPS.
 
-### Why SSE (Not WebSocket or Polling) for Browser Communication
+2. **The LinkIndexer already demonstrates the pattern.** The existing `LinkIndexer` watches document updates via the event callback, debounces, reads Y.Text("contents"), and writes to Y.Map("backlinks_v0"). A search indexer follows the exact same lifecycle: watch updates, debounce, read content, update index.
 
-| Factor | SSE | WebSocket | Long Polling |
-|--------|-----|-----------|-------------|
-| Direction needed | Server-to-client only (chat messages arriving) | Bidirectional | Server-to-client |
-| Browser already has WS | Adding a second WS connection creates confusion about which socket carries what | Reusing the existing yjs WS is not feasible (different protocol); a new WS adds complexity | N/A |
-| Reconnection | Built-in automatic reconnection via EventSource API | Must implement manually | Must implement manually |
-| HTTP/2 multiplexing | Works over existing HTTP/2 connection, no extra TCP handshake | Requires separate TCP connection | Works over HTTP but wasteful |
-| Complexity | Minimal -- native browser EventSource, simple HTTP endpoint on server | Requires ws library, upgrade handling, connection state management | Simple but latency tradeoff |
-| Client-to-server | Use regular fetch() POST for sending messages | Could use same connection | Use regular fetch() POST |
+3. **Memory efficiency.** Tantivy with MmapDirectory has near-zero resident memory for a small corpus. Embedding it adds negligible overhead versus a separate process that would duplicate the tokio runtime, HTTP client, and document loading.
 
-**Recommendation:** SSE for server-to-client events, regular HTTP POST for client-to-server actions. HIGH confidence -- this is the textbook use case for SSE (unidirectional server push).
+4. **Operational simplicity.** One Docker container, one process. No inter-service coordination, no service discovery, no additional port management.
+
+#### Why MCP server is Python (not Rust, not embedded)
+
+1. **The Python SDK already exists** with `DocumentManager`, `DocConnection`, and `UpdateContext`. The MCP server's document operations (list, read, edit) are thin wrappers around these existing primitives.
+
+2. **The MCP Python SDK is the most mature** with `FastMCP` providing decorator-based tool registration. The Rust MCP SDK (`rmcp`) exists but is less mature and would require significant boilerplate.
+
+3. **MCP servers are thin.** The MCP server does not hold state. It translates tool calls to HTTP requests against the relay server. CPU/memory overhead of a Python process for this workload is negligible.
+
+4. **stdio transport is standard for Claude Code integration.** Claude Code spawns MCP servers as child processes communicating via stdin/stdout. Python with `FastMCP("lens-relay").run(transport="stdio")` is the simplest path.
+
+#### Why MCP connects via HTTP (not WebSocket, not native)
+
+1. **MCP tools are request/response**, not streaming. "Read document X" and "Search for Y" are HTTP GET equivalents. WebSocket connections are for long-lived sync sessions.
+
+2. **The relay already has HTTP endpoints** for `get_as_update` and `update`. Adding `/search` and `/docs` endpoints extends the existing pattern.
+
+3. **The Python SDK already implements HTTP auth flow.** `DocumentManager._do_request()` handles server token auth, and `DocConnection` handles doc-level operations. The MCP server reuses this.
+
+4. **No auth complexity.** The MCP server uses the server token (from connection string) for all operations, same as the Python SDK does today. No need for per-document WebSocket token negotiation.
 
 ## Data Flow
 
-### Flow 1: Reading Message History (On Panel Open)
+### Document Indexing Flow
 
 ```
-Browser                    discord-bridge              Discord API
-  |                              |                         |
-  |  GET /channels/:id/messages  |                         |
-  |----------------------------->|                         |
-  |                              |  GET /channels/:id/messages
-  |                              |  (with bot token)       |
-  |                              |------------------------>|
-  |                              |                         |
-  |                              |  200 OK [messages]      |
-  |                              |<------------------------|
-  |                              |                         |
-  |  200 OK [messages]           |                         |
-  |<-----------------------------|                         |
-  |                              |                         |
-  | (render in DiscordPanel)     |                         |
+User edits document (Obsidian / lens-editor)
+    |
+    v
+WebSocket sync -> Y.Doc updated in memory
+    |
+    v
+observe_update_v1 callback fires
+    |
+    +-- SyncKv persistence (existing)
+    +-- Event dispatch (existing webhooks)
+    +-- LinkIndexer.on_document_update() (existing backlinks)
+    +-- SearchIndexer.on_document_update() (NEW -- same pattern)
+            |
+            v
+        Debounce (2s, same as LinkIndexer)
+            |
+            v
+        Read Y.Text("contents") from in-memory Y.Doc
+            |
+            v
+        Extract plain text from markdown
+            |
+            v
+        tantivy index.writer().add_document() / delete + re-add
+            |
+            v
+        index.writer().commit()
 ```
 
-The bridge proxies the Discord REST API, adding the bot token server-side. The browser never sees the bot token. Pagination uses Discord's `before` parameter (max 100 messages per request). Initial load fetches the most recent 50 messages; older messages load on scroll-up.
-
-### Flow 2: Live Message Streaming (Ongoing)
+### Search Query Flow
 
 ```
-Browser                    discord-bridge              Discord Gateway
-  |                              |                         |
-  |  GET /events?channels=:id   |                         |
-  |  (EventSource)               |                         |
-  |----------------------------->|                         |
-  |                              | (client added to        |
-  |                              |  subscription set for   |
-  |                              |  channel :id)           |
-  |                              |                         |
-  |                              |   MESSAGE_CREATE        |
-  |                              |   (channel_id matches)  |
-  |                              |<------------------------|
-  |                              |                         |
-  |  event: message_create       |                         |
-  |  data: {id, content,         |                         |
-  |         author, timestamp}   |                         |
-  |<-----------------------------|                         |
-  |                              |                         |
-  | (append to message list)     |                         |
+Claude Code: "Search for documents about 'machine learning'"
+    |
+    v
+MCP Server receives tool call: search(query="machine learning")
+    |
+    v
+HTTP GET relay-server/search?q=machine+learning&limit=10
+    |
+    v
+relay-server: tantivy searcher.search(query, limit)
+    |
+    v
+Returns: [{doc_id, title, snippet, score}, ...]
+    |
+    v
+MCP Server formats results as tool response
+    |
+    v
+Claude Code displays to user
 ```
 
-The bridge maintains a **single** Discord Gateway connection (one bot, one WebSocket to Discord). When it receives a `MESSAGE_CREATE` event, it checks which SSE clients are subscribed to that channel and pushes the event to each. The bridge filters gateway events by channel ID in application code -- Discord gateway intents operate at the guild level, not per-channel.
-
-**Required Discord Gateway Intents:**
-- `Guilds` -- populates guild/channel cache
-- `GuildMessages` -- receives MESSAGE_CREATE events in guild channels
-- `MessageContent` (privileged) -- receives actual message content, not just metadata
-
-### Flow 3: Posting a Message (User Action)
+### Document Read Flow (MCP)
 
 ```
-Browser                    discord-bridge              Discord API
-  |                              |                         |
-  |  POST /channels/:id/send    |                         |
-  |  {content, username}         |                         |
-  |----------------------------->|                         |
-  |                              |                         |
-  |                              |  POST /webhooks/:id/:token
-  |                              |  {content,              |
-  |                              |   username: "Name (unverified)",
-  |                              |   avatar_url: ...}      |
-  |                              |------------------------>|
-  |                              |                         |
-  |                              |  200 OK                 |
-  |                              |<------------------------|
-  |                              |                         |
-  |  200 OK                      |                         |
-  |<-----------------------------|                         |
-  |                              |                         |
-  |                              |   MESSAGE_CREATE        |
-  |                              |   (webhook message)     |
-  |                              |<---- (via Gateway) -----|
-  |                              |                         |
-  |  event: message_create       |                         |
-  |  data: {id, content,         |                         |
-  |         author: webhook...}  |                         |
-  |<-----------------------------|                         |
-  |                              |                         |
-  | (message appears in chat     |                         |
-  |  via normal SSE flow)        |                         |
+Claude Code: "Read the document titled 'Syllabus'"
+    |
+    v
+MCP Server: list_docs() -> find doc_id for "Syllabus"
+    |
+    v
+HTTP GET relay-server/d/{doc_id}/as-update (existing endpoint)
+    |
+    v
+MCP Server: pycrdt.Doc().apply_update(bytes)
+    |
+    v
+MCP Server: doc.get("contents", type=pycrdt.Text).to_string()
+    |
+    v
+Returns markdown text to Claude
 ```
 
-The posted message arrives back through the Gateway as a `MESSAGE_CREATE` event, so the chat updates via the same SSE flow -- no special client-side handling needed. The bridge maps channel IDs to webhook URLs from configuration.
-
-### Flow 4: Frontmatter Detection (Document Context)
+### Document Edit Flow (MCP with CriticMarkup)
 
 ```
-Browser (lens-editor)
-  |
-  | 1. User opens document
-  | 2. Editor loads Y.Doc content
-  | 3. useDiscordChat() hook reads frontmatter
-  | 4. Extracts `discussion` field:
-  |    "https://discord.com/channels/GUILD/CHANNEL"
-  | 5. Parses channel ID from URL
-  | 6. Opens SSE connection to bridge
-  | 7. Fetches message history
-  | 8. Renders DiscordPanel
+Claude Code: "Add a comment to paragraph 3"
+    |
+    v
+MCP Server: edit_doc(doc_id, edits=[{type: "insert", ...}])
+    |
+    v
+MCP Server: conn.for_update() context manager
+    |-- GET as-update -> pycrdt.Doc
+    |-- Apply CriticMarkup insertions to Y.Text
+    |-- POST update (diff)
+    |
+    v
+relay-server applies update, triggers re-index
 ```
 
-Frontmatter parsing happens entirely client-side from the Y.Doc `contents` Y.Text. No server involvement needed. The `discussion` field contains a Discord channel URL from which the channel ID is extracted.
-
-## discord-bridge Internal Architecture
+## Recommended Project Structure
 
 ```
-discord-bridge/
+crates/
+  relay/
+    src/
+      server.rs          # Add new HTTP endpoints here
+      search_indexer.rs   # NEW: tantivy integration, mirrors link_indexer pattern
+  y-sweet-core/
+    src/
+      link_indexer.rs     # Existing pattern to follow
+      search_indexer.rs   # NEW: core search logic (schema, indexing, querying)
+
+mcp-server/              # NEW: Python MCP server
+  pyproject.toml          # uv managed, deps: mcp, relay-sdk (local)
   src/
-    index.ts              # Entry point, starts HTTP server + Discord client
-    discord-client.ts     # discord.js Client setup, gateway event handling
-    sse-manager.ts        # SSE connection registry, fan-out logic
-    routes/
-      events.ts           # GET /events?channels=ID -- SSE endpoint
-      messages.ts         # GET /channels/:id/messages -- history proxy
-      send.ts             # POST /channels/:id/send -- webhook proxy
-    config.ts             # Channel-to-webhook mapping, bot token
-  package.json
-  Dockerfile
+    lens_mcp/
+      __init__.py
+      server.py           # FastMCP server definition
+      tools/
+        documents.py      # list_docs, read_doc, edit_doc tools
+        search.py          # search tool
+        links.py           # get_backlinks, get_outlinks tools
+      relay_client.py     # Wraps relay_sdk.DocumentManager with search
+
+python/                   # EXISTING: Python SDK
+  src/
+    relay_sdk/
+      __init__.py         # DocumentManager (existing)
+      connection.py       # DocConnection (existing)
+      update.py           # UpdateContext (existing)
 ```
 
-### Key Internal Components
+### Structure Rationale
 
-**DiscordClient wrapper** (`discord-client.ts`):
-- Connects to Discord Gateway with `Guilds`, `GuildMessages`, `MessageContent` intents
-- Listens for `messageCreate` events
-- Emits normalized message objects to SSEManager
-- Handles gateway reconnection automatically (discord.js built-in)
+- **`crates/y-sweet-core/src/search_indexer.rs`**: Core indexing and query logic lives in y-sweet-core (not relay) because it operates on bare Y.Docs, making it testable without a running server -- same pattern as `link_indexer.rs` where `index_content_into_folder()` is a free function that takes `&Doc` references.
 
-**SSEManager** (`sse-manager.ts`):
-- Maintains a `Map<channelId, Set<Response>>` of connected SSE clients
-- On `messageCreate` event, looks up channel subscribers and writes SSE data
-- Handles client disconnect cleanup (response `close` event)
-- Sends heartbeat comments (`:keepalive\n\n`) every 30 seconds to prevent proxy timeouts
+- **`crates/relay/src/search_indexer.rs`**: Server-level glue that owns the tantivy `Index`, spawns the background worker, and registers HTTP endpoints. Mirrors how `link_indexer.rs` has `LinkIndexer` struct with `run_worker()`.
 
-**Routes**:
-- `GET /events?channels=CHANNEL_ID` -- Opens SSE stream, registers client in SSEManager
-- `GET /channels/:id/messages?before=MSG_ID&limit=50` -- Proxies to Discord REST API with bot token
-- `POST /channels/:id/send` -- Validates payload, looks up webhook URL for channel, executes webhook
+- **`mcp-server/`**: Separate directory (not inside `python/`) because the MCP server is a deployable service with its own entry point, not a library. It depends on `relay_sdk` as a local path dependency.
 
-### Configuration
+## Architectural Patterns
 
-```typescript
-// config.ts
-interface BridgeConfig {
-  discordBotToken: string;
-  channels: {
-    [channelId: string]: {
-      webhookUrl: string;       // For posting messages
-      guildId: string;          // For gateway filtering
-    };
-  };
-  port: number;                 // HTTP server port (e.g., 8190)
-  allowedOrigins: string[];     // CORS for lens-editor
-}
-```
+### Pattern 1: Piggyback on Existing Update Observer
 
-Channel-to-webhook mapping is configured statically. Adding new channels requires updating config and restarting the bridge. This is acceptable for the initial implementation since the number of discussion channels is small and known.
+**What:** The relay server already has an `observe_update_v1` callback on every Y.Doc that fires on every mutation. The LinkIndexer, webhook dispatcher, and search indexer all attach to this same callback chain.
 
-## Browser-Side Integration
+**When to use:** Any time you need to react to document changes.
 
-### New Components
+**Trade-offs:** Simple, zero-latency notification. But the callback runs synchronously in the yrs update path, so it must be non-blocking (just send to a channel, like LinkIndexer does).
 
-**`useDiscordChat(channelId)` hook:**
-- Manages EventSource connection lifecycle
-- Maintains message array state
-- Fetches initial history on mount
-- Appends live messages from SSE
-- Provides `sendMessage(content, username)` function
-- Cleans up EventSource on unmount
-
-**`DiscordPanel` component:**
-- Renders in the right sidebar (similar to CommentsPanel, BacklinksPanel)
-- Scrollable message list with auto-scroll on new messages
-- Message compose input with username field
-- Loading/error/empty states
-- Mounted conditionally based on `discussion` frontmatter presence
-
-### Integration with Existing React App
-
-The DiscordPanel lives **outside** the `RelayProvider` key boundary. Unlike the CommentsPanel (which depends on the current Y.Doc and remounts with each document switch), the DiscordPanel's data source is the discord-bridge, not the Y.Doc.
-
-However, it still needs to know the current document's frontmatter. Two approaches:
-
-**Option A (recommended):** DiscordPanel receives `channelId` as a prop from EditorArea, which extracts it from the document content. The panel unmounts/remounts when `channelId` changes (using `key={channelId}`).
-
-**Option B:** DiscordPanel reads the Y.Doc content directly via `useYDoc()` to extract frontmatter. This couples it to the RelayProvider boundary, which is fine since EditorArea already lives there.
-
-```
-EditorArea (inside RelayProvider key boundary)
-  |
-  +-- Editor
-  +-- aside (right sidebar)
-       +-- TableOfContents
-       +-- BacklinksPanel
-       +-- CommentsPanel
-       +-- DiscordPanel (new, conditional on frontmatter)
-```
-
-### SSE Message Format
-
-```
-event: message_create
-data: {"id":"123","content":"Hello","author":{"id":"456","username":"Alice","avatar":"hash","bot":false},"timestamp":"2026-02-08T12:00:00.000Z","channelId":"789"}
-
-event: message_update
-data: {"id":"123","content":"Hello (edited)","channelId":"789"}
-
-event: message_delete
-data: {"id":"123","channelId":"789"}
-
-:keepalive
-```
-
-Events use Discord's event naming convention. The data payload is a normalized subset of Discord's message object -- enough for display, without excess fields.
-
-## Patterns to Follow
-
-### Pattern 1: SSE with Channel-Based Subscription
-
-**What:** Client specifies which channel(s) to subscribe to via query parameter. Server filters gateway events and only sends relevant ones.
-
-**When:** Always -- prevents clients from receiving events for channels they are not viewing.
-
-```typescript
-// Server: SSE endpoint
-app.get('/events', (req, res) => {
-  const channelIds = req.query.channels?.split(',') ?? [];
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-  });
-
-  // Register this response in SSEManager for each channel
-  for (const channelId of channelIds) {
-    sseManager.subscribe(channelId, res);
-  }
-
-  req.on('close', () => {
-    for (const channelId of channelIds) {
-      sseManager.unsubscribe(channelId, res);
+**Example (existing pattern in server.rs):**
+```rust
+// Inside the event_callback closure in load_doc_with_user():
+if let Some(ref indexer) = link_indexer_for_callback {
+    if y_sweet_core::link_indexer::should_index() {
+        let indexer = indexer.clone();
+        let doc_key = doc_key_for_indexer.clone();
+        tokio::spawn(async move {
+            indexer.on_document_update(&doc_key).await;
+        });
     }
-  });
-});
-```
-
-```typescript
-// Client: React hook
-function useDiscordChat(channelId: string | null) {
-  const [messages, setMessages] = useState<DiscordMessage[]>([]);
-
-  useEffect(() => {
-    if (!channelId) return;
-
-    const es = new EventSource(`/api/discord/events?channels=${channelId}`);
-
-    es.addEventListener('message_create', (e) => {
-      const msg = JSON.parse(e.data);
-      setMessages(prev => [...prev, msg]);
+}
+// NEW: Same pattern for search indexer
+if let Some(ref search_idx) = search_indexer_for_callback {
+    let search_idx = search_idx.clone();
+    let doc_key = doc_key_for_search.clone();
+    tokio::spawn(async move {
+        search_idx.on_document_update(&doc_key).await;
     });
-
-    return () => es.close();
-  }, [channelId]);
 }
 ```
 
-### Pattern 2: Webhook URL Kept Server-Side
+### Pattern 2: Debounced Background Worker
 
-**What:** The browser never sees the Discord webhook URL. It sends a POST to the bridge with the channel ID and message content; the bridge resolves the webhook URL from its config.
+**What:** Instead of indexing on every keystroke, batch updates with a debounce timer. The LinkIndexer uses a 2-second debounce: the first update sends a message to an mpsc channel, subsequent updates just reset a timestamp, and the worker only processes after 2 seconds of silence.
 
-**Why:** Webhook URLs are secrets -- anyone with the URL can post to the channel. Keeping them server-side prevents exposure via browser DevTools.
+**When to use:** Any indexing or processing that reads full document content. Typing produces 10+ updates per second; indexing once after a pause is sufficient.
 
-### Pattern 3: Optimistic UI Disabled for Chat
+**Trade-offs:** Adds 2-second latency to index freshness. For search, this is acceptable. The alternative (index every keystroke) would thrash the tantivy writer and waste CPU.
 
-**What:** After posting a message, do NOT add it to the local message list immediately. Wait for it to arrive via the SSE stream (which happens within ~200ms as Discord echoes the webhook message back through the Gateway).
+### Pattern 3: HTTP Thin Client for MCP
 
-**Why:** This avoids duplicate messages and ensures the displayed message matches what Discord actually accepted (including any modifications Discord applies). The latency is imperceptible.
+**What:** The MCP server is a stateless HTTP client. It holds no document state, no search index, no persistent connections. Every tool call translates to one or more HTTP requests against the relay server.
+
+**When to use:** When the backend already has the data and the client just needs to expose it through a different protocol.
+
+**Trade-offs:** Adds HTTP round-trip latency (localhost: <1ms). But avoids all the complexity of maintaining synchronized state in two processes. If the relay server restarts, the MCP server does not need to rebuild anything.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Reusing the yjs WebSocket for Chat Events
+### Anti-Pattern 1: MCP Server as yjs Client
 
-**What:** Piggybacking Discord chat events on the existing yjs/y-sweet WebSocket connection.
-**Why bad:** The y-sweet protocol is purpose-built for CRDT sync. Injecting arbitrary events breaks protocol assumptions, complicates the Rust relay server, and couples unrelated concerns. If the chat stream has issues, it could affect document sync.
-**Instead:** Use a separate SSE connection for chat events.
+**What people do:** Have the MCP server connect to the relay via WebSocket and maintain its own Y.Doc copies, then build the search index inside the MCP process.
 
-### Anti-Pattern 2: Browser Connecting Directly to Discord API
+**Why it's wrong:** Doubles memory usage (every doc in both relay and MCP). Adds complexity of managing WebSocket reconnection, state vector sync, and index rebuilding. The relay already has all docs in memory -- why duplicate?
 
-**What:** Having the browser client call Discord's REST API directly or open a Gateway connection.
-**Why bad:** Bot tokens cannot be exposed to the browser. Gateway connections from browsers are against Discord TOS for bot accounts. The browser would need the bot token for REST calls.
-**Instead:** All Discord API calls go through the bridge service.
+**Do this instead:** Embed the search index in the relay server and expose it via HTTP. The MCP server stays stateless.
 
-### Anti-Pattern 3: Polling Discord REST API for New Messages
+### Anti-Pattern 2: Separate Search Service
 
-**What:** Periodically fetching `/channels/:id/messages` to check for new messages instead of using the Gateway.
-**Why bad:** Wastes API rate limit budget (Discord limits to ~50 req/s globally for a bot). Adds latency (polling interval). Does not scale with number of channels.
-**Instead:** Use the Gateway for real-time events, REST only for initial history load.
+**What people do:** Run Elasticsearch/Meilisearch/Typesense as a separate Docker container for search.
 
-### Anti-Pattern 4: One SSE Connection Per Channel
+**Why it's wrong:** For ~200 markdown documents on a 4GB VPS, a separate search engine is massive overkill. Elasticsearch alone wants 1-2GB of heap. Meilisearch is lighter but still a separate process with its own persistence, its own document loading, and its own update pipeline.
 
-**What:** Opening a new SSE connection for each channel the user might view.
-**Why bad:** Browsers limit concurrent HTTP connections per origin (typically 6 for HTTP/1.1). Users switching between documents would accumulate connections.
-**Instead:** Use a single SSE connection with channel subscription via query parameter. When the user switches documents, close the old EventSource and open a new one with the new channel ID.
+**Do this instead:** Use tantivy as an embedded library inside the relay server. For this corpus size, the search index is likely <5MB. Tantivy with MmapDirectory has near-zero resident memory overhead.
 
-## Scalability Considerations
+### Anti-Pattern 3: Synchronous Search Index Updates
 
-| Concern | Current Scale (1-10 users) | Growth (50+ users) | Notes |
-|---------|---------------------------|--------------------|----|
-| Gateway connection | Single bot, single shard | Single shard supports up to 2500 guilds | Not a concern for one guild |
-| SSE connections | 1-10 open HTTP connections | 50+ connections; Node.js handles thousands | Standard EventSource; not a bottleneck |
-| Discord API rate limits | ~5 req/2sec per webhook; 50 req/s global bot rate limit | May need per-channel webhook rate limiting in bridge | Add queue with backoff |
-| Message history cache | None needed initially | Consider caching last N messages per channel to reduce API calls on panel open | Redis or in-memory LRU |
-| Bridge availability | Single process, restart is fine | Consider health checks and auto-restart via Docker | Same infra as relay-server |
+**What people do:** Update the search index inside the `observe_update_v1` callback synchronously, blocking the yjs sync loop.
 
-## Deployment
+**Why it's wrong:** Tantivy `index.writer().commit()` can take milliseconds. The `observe_update_v1` callback must be non-blocking -- it runs while holding the Y.Doc write lock.
 
-The discord-bridge runs as a Docker container on the same Hetzner VPS as the relay server. The Vite dev server proxies `/api/discord/*` to the bridge (same pattern as the existing `/api/relay` proxy for the Rust relay server).
+**Do this instead:** Follow the LinkIndexer pattern: send a message to an async channel, process in a background task with debouncing.
 
-```
-# vite.config.ts addition
-proxy: {
-  '/api/relay': { ... },  // existing
-  '/api/discord': {        // new
-    target: 'http://localhost:8190',
-    changeOrigin: true,
-    rewrite: (path) => path.replace(/^\/api\/discord/, ''),
-  },
-}
-```
+### Anti-Pattern 4: Exposing Search via WebSocket
 
-In production, the Cloudflare Tunnel or nginx config would route `/api/discord/*` to the bridge container.
+**What people do:** Create a custom WebSocket message type for search queries and responses, extending the yjs sync protocol.
 
-## Build Order (Dependencies Between Components)
+**Why it's wrong:** Search is request/response, not streaming. The yjs sync protocol is for document state synchronization. Mixing concerns creates protocol complexity and makes the search feature dependent on having a WebSocket connection.
 
-The following build order respects technical dependencies:
+**Do this instead:** Add a standard HTTP endpoint (`GET /search?q=...`). Both the MCP server and the lens-editor can call it independently.
 
-```
-Phase 1: discord-bridge core
-  - Discord Gateway connection (discord.js Client)
-  - REST proxy for message history
-  - No browser code yet; test with curl/httpie
-  Dependencies: Discord bot token, bot added to guild
-  Validates: Bot can connect, receive events, fetch history
+## New HTTP Endpoints on Relay Server
 
-Phase 2: SSE fan-out
-  - SSE endpoint with channel subscription
-  - Wire messageCreate events to SSE stream
-  - Keepalive mechanism
-  Dependencies: Phase 1
-  Validates: Messages stream to SSE clients in real time
+These endpoints are needed by the MCP server and are also useful for the lens-editor.
 
-Phase 3: Webhook proxy
-  - POST endpoint that maps channel ID to webhook URL
-  - Username formatting ("Name (unverified)")
-  - Rate limit respect (honor Retry-After headers)
-  Dependencies: Webhook URLs configured per channel
-  Validates: Messages post to Discord and echo back via SSE
+| Endpoint | Method | Auth | Purpose |
+|----------|--------|------|---------|
+| `GET /search` | GET | Server token | Full-text search across all documents |
+| `GET /docs` | GET | Server token | List all documents with metadata |
+| `GET /docs/:doc_id/content` | GET | Server/Doc token | Get document as plain text (not yjs binary) |
+| `GET /docs/:doc_id/backlinks` | GET | Server/Doc token | Get backlinks for a document |
+| `GET /docs/:doc_id/outlinks` | GET | Server/Doc token | Get outgoing links from a document |
 
-Phase 4: Frontend - useDiscordChat hook
-  - EventSource connection management
-  - Message history fetch on mount
-  - Live message append from SSE
-  - sendMessage() function
-  Dependencies: Phase 2, Phase 3
-  Validates: Hook works in isolation (Storybook or test harness)
+**Why server token auth:** These endpoints expose data across all documents (search, list) or provide read-only views. Server-level auth is appropriate, matching how the Python SDK already authenticates.
 
-Phase 5: Frontend - DiscordPanel component
-  - Message list rendering
-  - Compose input with username
-  - Frontmatter detection
-  - Integration into EditorArea sidebar
-  Dependencies: Phase 4
-  Validates: Full end-to-end flow in the editor
+**Why `/docs/:doc_id/content` is new:** The existing `/d/:doc_id/as-update` returns yjs binary that requires a CRDT library to decode. The MCP server needs plain text. Rather than decode yjs binary in Python on every read, the relay server can extract `Y.Text("contents").get_string()` and return plain text directly. This avoids the pycrdt dependency in the hot path and reduces latency.
 
-Phase 6: Vite proxy + deployment
-  - Vite proxy config for dev
-  - Docker container for bridge
-  - Production routing
-  Dependencies: Phase 5
-  Validates: Works in both dev and production environments
+## Search Index Design (Tantivy)
+
+### Schema
+
+```rust
+let mut schema_builder = Schema::builder();
+schema_builder.add_text_field("doc_id", STRING | STORED);       // exact match, stored for retrieval
+schema_builder.add_text_field("title", TEXT | STORED);           // tokenized, for search + display
+schema_builder.add_text_field("path", STRING | STORED);          // e.g., "/Notes/Ideas.md"
+schema_builder.add_text_field("folder", STRING | STORED);        // which shared folder
+schema_builder.add_text_field("content", TEXT);                  // tokenized, for search (not stored -- too large)
+schema_builder.add_u64_field("updated_at", INDEXED | STORED);   // for sorting by recency
 ```
 
-**Critical path:** Phases 1-2-3 are backend (can be built and tested independently). Phases 4-5 are frontend (depend on backend being available). Phase 6 is infrastructure.
+### Index Lifecycle
 
-**Parallelization opportunity:** Phase 3 (webhook proxy) can be built in parallel with Phase 2 (SSE), since they are independent endpoints on the same HTTP server. Similarly, Phase 4 (hook) can start once Phase 2 is available, even before Phase 3 is complete (the hook can initially support read-only mode).
+1. **Startup:** After `load_all_docs()` and `reindex_all_backlinks()`, do `reindex_all_search()` -- iterate all content docs, extract text, build full index. This mirrors the existing `reindex_all_backlinks()` pattern.
 
-## Forum Thread vs. Text Channel Handling
+2. **Runtime:** On document update (via debounced worker), delete the old document entry by `doc_id` and re-add with current content. Tantivy handles this efficiently with `delete_term()` + `add_document()`.
 
-Discord forum channels and text channels have slightly different API behavior:
+3. **Persistence:** Use `MmapDirectory` pointing to a local directory (e.g., `/data/search-index/`). The index survives relay restarts without full rebuild from R2. But since docs are loaded from R2 anyway, a full rebuild on startup is also acceptable for ~200 docs.
 
-| Aspect | Text Channel | Forum Thread |
-|--------|-------------|-------------|
-| Message fetch endpoint | `GET /channels/:id/messages` | Same endpoint -- thread ID works as channel ID |
-| Gateway event | `MESSAGE_CREATE` with `channel_id` | Same -- thread ID appears as `channel_id` |
-| Posting via webhook | Webhook attached to parent channel; use `thread_id` query param | Same webhook, specify `thread_id` in execute call |
-| URL format | `discord.com/channels/GUILD/CHANNEL` | `discord.com/channels/GUILD/THREAD_ID` |
+### Memory Impact
 
-The `discussion` frontmatter URL already contains the thread/channel ID. The bridge treats them identically for message reading and SSE streaming. For webhook posting to forum threads, the bridge needs to pass `?thread_id=THREAD_ID` when executing the webhook.
+For ~200 documents of ~5KB average content:
+- Raw content: ~1MB
+- Tantivy index (inverted index + FSTs): ~500KB-2MB
+- MmapDirectory: near-zero resident memory (OS pages in/out as needed)
+- Index writer buffer: 15MB during indexing (configurable, can lower to 5MB)
+- **Total additional memory: <20MB** -- negligible on 4GB VPS
 
-**Implementation detail:** The webhook is created on the parent forum channel, but messages are posted to a specific thread via the `thread_id` parameter. The bridge config needs to know whether a channel is a forum thread (to determine which webhook URL and thread_id to use). This can be inferred from the Discord API's channel type field.
+## Build Order (Dependencies)
+
+The components have clear build-order dependencies:
+
+```
+Phase 1: HTTP Read API on relay server
+  - GET /docs (list documents with metadata from filemeta_v0)
+  - GET /docs/:doc_id/content (plain text extraction from Y.Text)
+  - GET /docs/:doc_id/backlinks (read from backlinks_v0)
+  No new dependencies. Uses existing DashMap<docs>, existing filemeta/backlinks Y.Maps.
+
+Phase 2: MCP Server (basic tools)
+  - Python project with FastMCP
+  - list_docs, read_doc tools (calls Phase 1 endpoints)
+  - get_backlinks tool
+  Depends on: Phase 1 endpoints existing.
+
+Phase 3: Search index in relay server
+  - Add tantivy dependency to y-sweet-core/relay
+  - SearchIndexer struct (mirrors LinkIndexer)
+  - GET /search endpoint
+  - Startup reindexing
+  Depends on: Nothing from Phase 1/2 (parallel-safe), but logically follows.
+
+Phase 4: Search tool in MCP server
+  - search() tool in MCP server (calls GET /search)
+  Depends on: Phase 2 (MCP server exists) + Phase 3 (search endpoint exists).
+
+Phase 5: Edit capabilities
+  - edit_doc tool in MCP server (CriticMarkup insertions)
+  - Uses existing Python SDK UpdateContext
+  Depends on: Phase 2 (MCP server exists).
+```
+
+**Key insight:** Phases 1 and 3 are independent (HTTP API and search index). Phase 2 depends on Phase 1. Phase 4 depends on both 2 and 3. This allows parallel work on the relay (Rust) and MCP (Python) tracks.
+
+## Scaling Considerations
+
+| Scale | Architecture Adjustments |
+|-------|--------------------------|
+| Current (~200 docs, 1-5 users) | Monolith is perfect. All docs in memory, search index embedded, single process. |
+| ~1000 docs, 10 users | Still fine. Tantivy handles millions of docs. Memory might reach 200-300MB for docs. |
+| ~10,000 docs, 100 users | Consider lazy doc loading (don't `load_all_docs` on startup). Search index becomes the primary discovery mechanism. May need GC tuning. |
+| Hypothetical large scale | Not a concern for this project. The architecture doesn't preclude migration to external search if ever needed. |
+
+### First Bottleneck
+
+**Memory from loaded docs.** If all documents are loaded on startup (current behavior for backlink reindexing), memory scales linearly with corpus size. For search-only needs, tantivy can index from stored data and doesn't require docs to be in memory -- but backlink indexing currently does. This is a future concern, not a current one.
+
+### Second Bottleneck
+
+**Startup time.** Loading all docs from R2 and reindexing takes time. Currently ~200 docs loads in seconds. At 1000+ docs, this could take 30+ seconds. Mitigation: persist the search index to disk so it doesn't need full rebuild, and lazy-load docs for backlinks.
+
+## Integration Points
+
+### External Services
+
+| Service | Integration Pattern | Notes |
+|---------|---------------------|-------|
+| Cloudflare R2 | S3-compatible presigned URLs via rusty-s3 | Existing, no changes needed |
+| relay-git-sync | HTTP webhooks on document update | Existing, no changes needed |
+| Claude Code | stdio MCP protocol | New, MCP server provides this |
+
+### Internal Boundaries
+
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| relay-server <-> search index | In-process (embedded tantivy) | No IPC, shared memory via `Arc<DashMap>` |
+| relay-server <-> MCP server | HTTP (localhost) | MCP server uses Python relay_sdk |
+| MCP server <-> Claude Code | stdio (JSON-RPC) | Spawned as child process |
+| search indexer <-> link indexer | Independent workers | Both watch same update events, don't interact |
 
 ## Sources
 
-- [Discord Gateway Documentation](https://discord.com/developers/docs/events/gateway) -- HIGH confidence (official docs)
-- [Discord Gateway Events](https://discord.com/developers/docs/events/gateway-events) -- HIGH confidence (official docs)
-- [Discord Webhook Resource](https://discord.com/developers/docs/resources/webhook) -- HIGH confidence (official docs)
-- [discord.js Gateway Intents Guide](https://discordjs.guide/popular-topics/intents) -- HIGH confidence (official discord.js docs)
-- [Discord Webhook Rate Limits](https://birdie0.github.io/discord-webhooks-guide/other/rate_limits.html) -- MEDIUM confidence (community docs, consistent with official rate limit headers)
-- [Discord Webhooks Complete Guide 2025](https://inventivehq.com/blog/discord-webhooks-guide) -- MEDIUM confidence (well-sourced community guide)
-- [SSE vs WebSockets Comparison](https://ably.com/blog/websockets-vs-sse) -- HIGH confidence (Ably is an authority on real-time protocols)
-- [DigitalOcean SSE with Node.js Tutorial](https://www.digitalocean.com/community/tutorials/nodejs-server-sent-events-build-realtime-app) -- HIGH confidence (authoritative tutorial source)
-- [discord.js @discordjs/ws Package](https://discord.js.org/docs/packages/ws/main) -- HIGH confidence (official discord.js docs)
-- [Discord Message Content Privileged Intent FAQ](https://support-dev.discord.com/hc/en-us/articles/4404772028055-Message-Content-Privileged-Intent-FAQ) -- HIGH confidence (official Discord support)
+- Codebase analysis: `server.rs`, `link_indexer.rs`, `doc_sync.rs`, `doc_connection.rs`, `event.rs` (HIGH confidence -- primary source)
+- [MCP Official Documentation - Build Server](https://modelcontextprotocol.io/docs/develop/build-server) (HIGH confidence)
+- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (HIGH confidence)
+- [Tantivy GitHub](https://github.com/quickwit-oss/tantivy) (HIGH confidence)
+- [Tantivy memory architecture](https://fulmicoton.com/posts/behold-tantivy/) (MEDIUM confidence -- blog post from tantivy author)
+- [Yjs search indexer architecture discussion](https://discuss.yjs.dev/t/search-indexer-architecture/520) (MEDIUM confidence -- community discussion)
+- [MCP Transport Protocols comparison](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) (HIGH confidence -- official spec)
+
+---
+*Architecture research for: MCP server + search index integration with relay server*
+*Researched: 2026-02-08*

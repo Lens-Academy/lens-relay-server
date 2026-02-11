@@ -1,5 +1,6 @@
 // src/components/Editor/extensions/criticmarkup.test.ts
 import { describe, it, expect, afterEach } from 'vitest';
+import { Transaction } from '@codemirror/state';
 import { createCriticMarkupEditor, createCriticMarkupEditorWithSourceMode, hasClass, moveCursor } from '../../../test/codemirror-helpers';
 import { criticMarkupField, toggleSuggestionMode, suggestionModeField } from './criticmarkup';
 import { toggleSourceMode } from './livePreview';
@@ -236,9 +237,10 @@ describe('CriticMarkup Extension', () => {
         // Enable suggestion mode
         view.dispatch({ effects: toggleSuggestionMode.of(true) });
 
-        // Insert text
+        // Insert text (annotate as user input so suggestion filter activates)
         view.dispatch({
           changes: { from: 5, insert: ' world' },
+          annotations: Transaction.userEvent.of('input'),
         });
 
         const doc = view.state.doc.toString();
@@ -265,6 +267,7 @@ describe('CriticMarkup Extension', () => {
         view.dispatch({ effects: toggleSuggestionMode.of(true) });
         view.dispatch({
           changes: { from: 5, insert: 'X' },
+          annotations: Transaction.userEvent.of('input'),
         });
 
         const doc = view.state.doc.toString();
@@ -280,13 +283,13 @@ describe('CriticMarkup Extension', () => {
         view.dispatch({ effects: toggleSuggestionMode.of(true) });
 
         // Type 'h'
-        view.dispatch({ changes: { from: 5, insert: 'h' } });
+        view.dispatch({ changes: { from: 5, insert: 'h' }, annotations: Transaction.userEvent.of('input') });
 
         // Get cursor position - should be inside the addition
         const cursorPos = view.state.selection.main.head;
 
         // Type 'i' at cursor position
-        view.dispatch({ changes: { from: cursorPos, insert: 'i' } });
+        view.dispatch({ changes: { from: cursorPos, insert: 'i' }, annotations: Transaction.userEvent.of('input') });
 
         const doc = view.state.doc.toString();
 
@@ -307,6 +310,7 @@ describe('CriticMarkup Extension', () => {
         // Delete " world"
         view.dispatch({
           changes: { from: 5, to: 11, insert: '' },
+          annotations: Transaction.userEvent.of('delete'),
         });
 
         const doc = view.state.doc.toString();
@@ -333,6 +337,7 @@ describe('CriticMarkup Extension', () => {
         view.dispatch({ effects: toggleSuggestionMode.of(true) });
         view.dispatch({
           changes: { from: 5, to: 11, insert: '' },
+          annotations: Transaction.userEvent.of('delete'),
         });
 
         const doc = view.state.doc.toString();
@@ -352,6 +357,7 @@ describe('CriticMarkup Extension', () => {
         // Replace "world" with "there"
         view.dispatch({
           changes: { from: 6, to: 11, insert: 'there' },
+          annotations: Transaction.userEvent.of('input'),
         });
 
         const doc = view.state.doc.toString();
@@ -378,6 +384,7 @@ describe('CriticMarkup Extension', () => {
         view.dispatch({ effects: toggleSuggestionMode.of(true) });
         view.dispatch({
           changes: { from: 6, to: 11, insert: 'there' },
+          annotations: Transaction.userEvent.of('input'),
         });
 
         const doc = view.state.doc.toString();

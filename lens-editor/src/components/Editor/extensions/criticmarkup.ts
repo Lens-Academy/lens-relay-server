@@ -6,8 +6,9 @@ import {
   EditorSelection,
   EditorState,
   Compartment,
+  Transaction,
 } from '@codemirror/state';
-import type { Transaction, ChangeSpec } from '@codemirror/state';
+import type { ChangeSpec } from '@codemirror/state';
 import {
   ViewPlugin,
   Decoration,
@@ -269,6 +270,10 @@ const suggestionModeFilter = EditorState.transactionFilter.of((tr: Transaction) 
 
   // Only wrap when suggestion mode is ON
   if (!tr.startState.field(suggestionModeField)) return tr;
+
+  // Only wrap user-initiated edits (typing, paste, delete).
+  // Remote sync (y-codemirror.next) and programmatic dispatches don't set userEvent.
+  if (!tr.annotation(Transaction.userEvent)) return tr;
 
   const cursorPos = tr.startState.selection.main.head;
   const ranges = tr.startState.field(criticMarkupField);

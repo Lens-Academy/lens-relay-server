@@ -21,7 +21,8 @@
     "test:integration:smoke": "vitest run smoke.integration",
     "dev:fixtures": "cross-env VITE_USE_FIXTURES=true vite",
     "discord:start": "cd ../discord-bridge && npm run dev",
-    "discord:setup": "echo 'Set DISCORD_BOT_TOKEN env var and run npm run discord:start'"
+    "discord:setup": "echo 'Set DISCORD_BOT_TOKEN env var and run npm run discord:start'",
+    "generate-link": "tsx scripts/generate-share-link.ts"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.0",
@@ -59,6 +60,7 @@
     "globals": "^16.5.0",
     "happy-dom": "^20.4.0",
     "tailwindcss": "^4.1.18",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",

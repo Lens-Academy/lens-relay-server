@@ -1,6 +1,6 @@
 {
   "mode": "yolo",
-  "depth": "quick",
+  "depth": "standard",
   "parallelization": true,
   "model_profile": "quality",
   "workflow": {

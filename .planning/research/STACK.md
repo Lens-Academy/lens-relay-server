@@ -1,251 +1,204 @@
-# Technology Stack: Discord Chat Integration
+# Stack Research
 
-**Project:** lens-editor Discord chat panel
+**Domain:** MCP server + keyword search index for CRDT document collaboration
 **Researched:** 2026-02-08
-**Overall confidence:** MEDIUM-HIGH
+**Confidence:** HIGH (core decisions verified with official docs + crates.io)
 
-## Context
+## Executive Decision: Language Choice
 
-Adding an interactive Discord chat panel to the lens-editor web client. Documents have frontmatter linking to Discord channels/forum threads. The panel shows message history, streams live messages via a bot gateway connection, and lets users post via webhook with self-reported name. The existing lens-editor stack is React 19, TypeScript, Vite 7, TailwindCSS 4, CodeMirror 6, yjs. The relay backend is Rust/Axum. A new Node.js/TypeScript sidecar service will run the Discord bot.
+**Recommendation: Build both the MCP server and search index in Rust, as a new crate in the existing workspace.**
 
----
+Rationale:
+
+1. **The relay server already runs Rust/Axum/tokio/yrs.** The MCP server needs to read Y.Doc content (via yrs) and the search index needs to receive document updates. Building in-process avoids serialization overhead and network hops between services.
+
+2. **rmcp (the official Rust MCP SDK) natively integrates with Axum.** The relay already uses Axum 0.7 (upgrading to 0.8 is straightforward). rmcp provides `StreamableHttpService` that nests directly into an Axum router -- the MCP endpoint can live alongside the existing relay HTTP routes.
+
+3. **4GB RAM constraint eliminates separate-process architectures.** Running a Python MCP server + a search engine as separate processes alongside the relay would consume too much memory. An in-process Rust solution shares the relay's memory space.
+
+4. **The Python SDK exists but is thin.** The `python/src/relay_sdk/` code is a simple HTTP client wrapper (requests + pycrdt). It does not provide in-process access to Y.Docs -- it fetches them over HTTP. For search indexing, we need the doc content as it changes, which the Rust relay already has in memory via `DashMap<String, DocWithSyncKv>`.
+
+Why NOT Python:
+- Would require running a separate process (memory overhead on 4GB VPS)
+- Python MCP SDK (FastMCP) is more mature for quick prototyping, but we need deep integration with the relay's in-memory doc state
+- pycrdt can read Y.Docs, but only via HTTP round-trips through the relay API -- adds latency and complexity
+- Two runtimes on a 4GB VPS is wasteful
+
+Why NOT TypeScript:
+- Same separate-process problem as Python
+- No access to the relay's in-memory Y.Doc state
+- Would need to connect via WebSocket to read documents (another client consuming relay resources)
+- The lens-editor is TypeScript, but it's a frontend -- the MCP server is backend infrastructure
 
 ## Recommended Stack
 
-### Discord Bot Sidecar (Node.js Service)
+### Core Technologies
 
-| Technology | Version | Purpose | Confidence | Why |
-|------------|---------|---------|------------|-----|
-| **discord.js** | 14.25.x | Discord gateway + REST client | HIGH | De facto standard. 14.25.1 is latest stable (published Jan 2026). Modular internally but the main package is the pragmatic choice -- it bundles `@discordjs/rest`, `@discordjs/ws`, and types. No reason to use lower-level `@discordjs/core` for this use case; the overhead is negligible and discord.js gives you typed Client events, caching, and reconnection out of the box. |
-| **hono** | ^4.11 | HTTP server for SSE + REST endpoints | HIGH | Lightweight (14kB), TypeScript-first, built-in `streamSSE()` helper. Runs on Node.js via `@hono/node-server`. Far simpler than Express for an API-only sidecar with no middleware requirements. Better SSE ergonomics than Fastify. |
-| **@hono/node-server** | ^1.19 | Node.js adapter for Hono | HIGH | Required to run Hono on Node.js (vs. Cloudflare Workers / Bun). Published monthly, latest 1.19.9. |
-| **TypeScript** | ~5.9 | Type safety | HIGH | Match the lens-editor version for consistency. |
-| **tsx** | latest | Dev runner (ts-node replacement) | MEDIUM | Fast TypeScript execution for development. For production, compile with `tsc` and run with `node`. |
+| Technology | Version | Purpose | Why Recommended |
+|------------|---------|---------|-----------------|
+| **rmcp** | 0.14.0 (crates.io) | MCP server SDK | Official Rust SDK, 3K+ GitHub stars, 130+ contributors. Native Axum integration via `StreamableHttpService`. Shares tokio runtime with relay. **Confidence: HIGH** (verified via docs.rs and GitHub) |
+| **tantivy** | 0.25.0 | Full-text search engine | Lucene-equivalent in Rust. Memory-mapped index means near-zero resident RAM when using MmapDirectory. 2x faster than Lucene. BM25 scoring, phrase queries, snippet generation. Perfect for 4GB VPS. **Confidence: HIGH** (verified via docs.rs and GitHub) |
+| **rusqlite** | 0.38.0 | Search metadata store | Optional -- for storing doc metadata (uuid-to-path mappings, index timestamps) alongside tantivy. The `bundled` feature auto-enables FTS5 as a backup/simpler search option. **Confidence: HIGH** (verified via docs.rs and GitHub build.rs) |
+| **Axum** | 0.8.x | HTTP framework | rmcp requires Axum 0.8 for StreamableHttpService. Relay currently uses 0.7.4 -- upgrade required but straightforward (breaking changes are minimal: handler signatures, state extraction). **Confidence: HIGH** |
+| **yrs** | 0.19.1 | Y.Doc access | Already in workspace. Used to read `getText("contents")` for indexing and `getMap("filemeta_v0")` for doc metadata. No additional dependency needed. **Confidence: HIGH** |
 
-### Frontend (lens-editor additions)
+### Supporting Libraries
 
-| Technology | Version | Purpose | Confidence | Why |
-|------------|---------|---------|------------|-----|
-| **Native EventSource API** | Browser built-in | SSE client for live messages | HIGH | Zero dependencies. EventSource has built-in reconnection with configurable retry. Works in all browsers. A custom React hook (`useDiscordChat`) wraps it. No npm package needed. |
-| **discord-markdown-parser** | ^1.3.1 | Parse Discord markdown to AST | MEDIUM | Actively maintained (published Feb 2026). Parses Discord-flavored markdown (bold, italic, strikethrough, spoilers, code blocks, mentions) into an AST you can render with React. Based on `simple-markdown`. |
-| **Native fetch** | Browser built-in | POST webhook messages, fetch history | HIGH | Already available in modern browsers and the sidecar. No axios needed. |
+| Library | Version | Purpose | When to Use |
+|---------|---------|---------|-------------|
+| **schemars** | 1.0 | JSON Schema generation | Required by rmcp for tool parameter schemas. rmcp uses schemars 1.0 (2020-12 draft). |
+| **serde** | 1.0 | Serialization | Already in workspace. Used for MCP message serialization and search result formatting. |
+| **tokio** | 1.x | Async runtime | Already in workspace. Shared between relay, MCP server, and search indexer. |
+| **tracing** | 0.1 | Structured logging | Already in workspace. MCP and search operations log through the same tracing subscriber. |
 
-### NOT Using (and Why)
+### Development Tools
 
-| Technology | Why Not |
-|------------|---------|
-| **WidgetBot / iframe embeds** | Requires OAuth user login; no self-reported name posting; heavy; not customizable enough for our panel UX; brings in Discord's own UI chrome which clashes with our editor. |
-| **`@discordjs/core` + `@discordjs/ws` + `@discordjs/rest` (separate packages)** | Unnecessary complexity for a single-bot sidecar. The main `discord.js` package wraps these internally with better ergonomics (typed events, automatic caching, reconnection). Only use the separate packages if building a framework or sharding across processes. |
-| **discord.js v15** | Pre-release as of Feb 2026. Guide docs exist but no stable npm release. Stick with v14.25.x which is actively maintained. |
-| **Express / Fastify** | Express is dead weight for a tiny API sidecar. Fastify is fine but Hono is lighter, has native SSE streaming, and TypeScript-first without decoration overhead. |
-| **WebSocket (sidecar-to-browser)** | SSE is the right choice here. The data flow is unidirectional: sidecar pushes Discord events to browser. Posting goes through a separate REST endpoint. SSE is simpler (auto-reconnect, no ping/pong, works through HTTP proxies/tunnels natively). WebSocket is only justified if bidirectional streaming is needed. |
-| **Socket.IO** | Massive dependency for a one-way event stream. SSE does the job with zero client-side dependencies. |
-| **Pushing Discord events through the Rust relay server** | The relay server is upstream y-sweet. Adding Discord event bridging would create coupling and complicate upstream merges. A separate sidecar keeps concerns isolated. |
-| **react-discord-message** | "Work in progress" status, low adoption. Better to write a thin custom renderer over `discord-markdown-parser` AST output -- more control, less dependency risk. |
-| **discord-markdown (original)** | Last published 4 years ago. Effectively abandoned. The `discord-markdown-parser` package is the actively maintained successor. |
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| `mcp-inspector` | MCP server testing | Official CLI tool for testing MCP servers interactively. Install via `npx @anthropic-ai/mcp-inspector`. |
+| `curl` / `httpie` | HTTP testing | StreamableHTTP transport is just HTTP POST -- testable with curl. |
 
----
+## Installation
 
-## Detailed Rationale
+```toml
+# In the new crate's Cargo.toml (e.g., crates/mcp-search/Cargo.toml)
 
-### Why discord.js (not raw Discord API)
+[dependencies]
+# MCP server
+rmcp = { version = "0.14", features = ["server", "transport-streamable-http-server", "macros"] }
 
-**Confidence: HIGH** (verified via npm, GitHub releases, official docs)
+# Full-text search
+tantivy = "0.25"
 
-The Discord gateway is a stateful WebSocket protocol requiring:
-- Heartbeat management (or the bot disconnects)
-- Resume/reconnect logic (session recovery after drops)
-- Intent negotiation
-- Rate limit handling on REST calls
-- Proper op-code sequencing (IDENTIFY, RESUME, etc.)
+# Metadata store (optional, start without it)
+# rusqlite = { version = "0.38", features = ["bundled"] }
 
-Reimplementing this from raw `ws` + `fetch` is roughly 500-1000 lines of boilerplate that discord.js already handles. The library is the clear ecosystem winner: 14.25.1 stable, published Jan 2026, massive community, TypeScript-native.
+# Shared with relay workspace
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+anyhow = "1.0"
 
-The modular `@discordjs/core` package exists for advanced use cases (custom sharding, process distribution), but for a single-bot sidecar reading one server's messages, the full `discord.js` Client is the right abstraction.
+# Y.Doc access (shared with relay)
+yrs = "0.19.1"
 
-### Why SSE (not WebSocket) for Sidecar-to-Browser
-
-**Confidence: HIGH** (architectural pattern analysis)
-
-The data flow is:
-
+# JSON Schema for MCP tool parameters
+schemars = "1.0"
 ```
-Discord Gateway --> Bot sidecar --> SSE --> Browser
-Browser --> REST POST --> Bot sidecar --> Discord Webhook
-```
-
-SSE wins because:
-1. **Unidirectional fit**: Messages flow server-to-client only. Posting is a separate action via REST.
-2. **Auto-reconnect**: EventSource reconnects automatically with `retry` header. No manual reconnect logic needed in the React client.
-3. **HTTP-native**: Works through Cloudflare tunnels, nginx proxies, and SSH tunnels without upgrade negotiation issues.
-4. **Simpler server code**: Hono's `streamSSE()` is ~10 lines vs. WebSocket connection management.
-5. **No client dependency**: Browser `EventSource` API is built-in.
-
-The one downside (no binary data) is irrelevant -- we are streaming JSON message events.
-
-### Why Hono (not Express/Fastify)
-
-**Confidence: HIGH** (verified via npm, official docs)
-
-The sidecar needs exactly three endpoints:
-1. `GET /channels/:id/messages` -- fetch history (proxied REST call to Discord API)
-2. `GET /channels/:id/events` -- SSE stream of live messages
-3. `POST /channels/:id/messages` -- post via webhook
-
-Hono is ideal for this because:
-- Built-in `streamSSE()` helper (import from `hono/streaming`)
-- TypeScript-first, no `@types` packages needed
-- ~14kB, minimal dependency surface
-- v4.11.9 actively maintained (published Feb 2026)
-- Runs on Node.js via `@hono/node-server`
-
-### Why discord-markdown-parser (not custom parsing)
-
-**Confidence: MEDIUM** (package is small; may need to fork/extend)
-
-Discord markdown is NOT standard markdown. It has:
-- `||spoiler||` syntax
-- `<@user_id>` mentions
-- `<#channel_id>` channel links
-- `<t:timestamp:format>` timestamps
-- Custom emoji `<:name:id>`
-- `>>> block quotes` (triple chevron)
-
-`discord-markdown-parser` (v1.3.1, Feb 2026) parses these into an AST. We write a small React renderer (~100 lines) that walks the AST and renders `<span>`, `<code>`, `<strong>`, etc. For MVP (plain text first), most of this can be deferred -- just extract text content from the AST.
-
-Risk: The package is small and may have edge cases. Mitigation: it is MIT licensed and simple enough to fork if needed.
-
-### Discord API Essentials
-
-**Confidence: HIGH** (verified via Discord Developer Portal docs)
-
-| Concept | Details |
-|---------|---------|
-| **Bot Token** | Single token authenticates both gateway and REST. Store in env var, never in client code. |
-| **Gateway Intents** | Need `GUILD_MESSAGES`, `MESSAGE_CONTENT` (privileged). For bots in <100 servers, enable in Developer Portal without approval. |
-| **Message History** | `GET /channels/{id}/messages?limit=50&before={id}` -- paginate backwards with `before` param. Max 100 per request. |
-| **Webhook Posting** | `POST {webhook_url}` with `{ content, username, avatar_url }`. Overrides webhook display name per-message. Rate limit: 5 requests / 2 seconds per webhook. |
-| **Forum Threads** | Forum posts are threads. Each has a `channel_id`. Read messages with the same channel messages endpoint. |
-| **Rate Limits** | Global: 50 req/s. Per-channel messages: 5/5s. discord.js handles rate limit queuing automatically. |
-
----
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────┐
-│                    Browser                          │
-│                                                     │
-│  lens-editor (React 19)                             │
-│  ┌───────────────────────────────────────────────┐  │
-│  │  DiscordPanel component                       │  │
-│  │  ├── useDiscordChat() hook                    │  │
-│  │  │   ├── EventSource  ← SSE ←─────────────┐  │  │
-│  │  │   └── fetch POST  → REST →──────────┐  │  │  │
-│  │  ├── MessageList (virtual scroll)      │  │  │  │
-│  │  └── ComposeBox                        │  │  │  │
-│  └────────────────────────────────────────│──│──┘  │
-└───────────────────────────────────────────│──│──────┘
-                                            │  │
-                                            │  │
-┌───────────────────────────────────────────│──│──────┐
-│  Discord Sidecar (Node.js / Hono)        │  │      │
-│                                           │  │      │
-│  GET  /channels/:id/events  ──────────────┘  │      │
-│  POST /channels/:id/messages ────────────────┘      │
-│  GET  /channels/:id/messages (history)              │
-│                                                     │
-│  discord.js Client ←── Gateway WS ──→ Discord API  │
-│  (maintains live connection, receives events)       │
-│                                                     │
-│  Webhook URLs stored in config / env                │
-└─────────────────────────────────────────────────────┘
-```
-
----
-
-## Installation Plan
-
-### Sidecar Service (new `discord-sidecar/` directory)
 
 ```bash
-# Initialize
-mkdir discord-sidecar && cd discord-sidecar
-npm init -y
-
-# Runtime dependencies
-npm install discord.js@^14.25.1 hono@^4.11 @hono/node-server@^1.19
-
-# Dev dependencies
-npm install -D typescript@~5.9 tsx @types/node@^24
+# For MCP testing (one-time install)
+npx @anthropic-ai/mcp-inspector
 ```
 
-### Frontend (lens-editor additions)
+## Alternatives Considered
 
-```bash
-cd lens-editor
+### MCP SDK
 
-# Only one new dependency needed for Discord markdown parsing.
-# SSE client (EventSource) and fetch are browser built-ins.
-npm install discord-markdown-parser@^1.3
-```
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| **rmcp** (Rust, official) | **mcp-python-sdk** (Python, official) | If building a standalone MCP server that does NOT need in-process access to relay Y.Doc state. Python FastMCP is easier for quick prototyping, but requires a separate process and HTTP round-trips to read documents. |
+| **rmcp** (Rust, official) | **mcpkit** (Rust, community) | If rmcp's API is too verbose. mcpkit provides a `#[mcp_server]` macro that reduces boilerplate. However, mcpkit is community-maintained (lower bus factor) and may lag protocol updates. Use if rmcp's `#[tool_router]` macro proves insufficient. |
+| **rmcp** (Rust, official) | **TypeScript SDK** (official) | If building a separate MCP server that connects to the relay as a WebSocket client. Only makes sense if the MCP server is deployed on a different machine. On same 4GB VPS, adds unnecessary overhead. |
 
-### Environment Variables (sidecar)
+### Search Engine
 
-```env
-DISCORD_BOT_TOKEN=<bot token from Developer Portal>
-DISCORD_WEBHOOK_URL_DEFAULT=<webhook URL for default channel>
-# Optional: map channel IDs to webhook URLs
-DISCORD_WEBHOOK_MAP='{"channel_id":"webhook_url"}'
-SIDECAR_PORT=8190
-```
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| **tantivy** (Rust library) | **SQLite FTS5** (via rusqlite) | If the document corpus is very small (<100 docs) and you want zero additional dependencies. FTS5 is simpler but lacks: snippet generation with context, BM25 tuning, faceted search, and incremental merge policies. Good fallback if tantivy proves overkill. |
+| **tantivy** (Rust library) | **Meilisearch** (separate service) | Never on a 4GB VPS. Meilisearch uses 6-8x more storage than SQLite FTS5 and runs as a separate process consuming 100-500MB RAM. Only if you need typo-tolerance and instant search UX, which is unnecessary for an MCP tool interface. |
+| **tantivy** (Rust library) | **Sonic** (separate service) | Lightweight alternative to Meilisearch. Still a separate process. Only if you need sub-millisecond search and your corpus grows to millions of docs. Overkill for this use case. |
 
----
+### MCP Transport
 
-## Version Verification Log
+| Recommended | Alternative | When to Use Alternative |
+|-------------|-------------|-------------------------|
+| **Streamable HTTP** | **stdio** | If the MCP server runs as a subprocess spawned by Claude Desktop. Not applicable here -- the server runs on a remote VPS, so HTTP is required. |
+| **Streamable HTTP** | **SSE** (legacy) | Never. SSE was deprecated in MCP spec 2025-03-26. Streamable HTTP is the replacement. |
 
-All versions verified via web search on 2026-02-08:
+## What NOT to Use
 
-| Package | Claimed Version | Verification Method | Last Published |
-|---------|-----------------|--------------------|--------------------|
-| discord.js | 14.25.1 | npm search + discord.js.org/docs | Jan 2026 (~23 days ago) |
-| hono | 4.11.9 | npm search | Feb 2026 (same day) |
-| @hono/node-server | 1.19.9 | npm search | Jan 2026 (~1 month ago) |
-| @discordjs/rest | 2.6.0 | npm search | Sep 2025 (~5 months ago) |
-| @discordjs/ws | 2.0.4 | npm search | Jan 2026 (~1 month ago) |
-| discord-markdown-parser | 1.3.1 | npm search + GitHub | Feb 2026 (~6 days ago) |
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| **Meilisearch / Elasticsearch** | Separate process, 200-500MB+ RAM. On a 4GB VPS already running the relay, leaves too little headroom. Storage is 6-8x larger than alternatives. | tantivy (in-process, mmap-based, near-zero resident RAM) |
+| **Python MCP server** (separate process) | Adds ~100MB+ for Python runtime + pycrdt. Requires HTTP round-trips to read Y.Doc content from relay. Two processes on 4GB VPS is tight. | rmcp in-process with the relay server |
+| **SSE transport** | Deprecated in MCP spec (2025-03-26). Two-endpoint architecture replaced by single-endpoint Streamable HTTP. | Streamable HTTP transport |
+| **MCP over stdio** | Requires local subprocess spawning. Not compatible with remote VPS deployment. | Streamable HTTP (works over network) |
+| **mcp_rust_sdk** (community crate) | Multiple community SDKs exist (mcp_rust_sdk, mcp-sdk-rs, mcp-protocol-sdk). All are lower adoption than the official rmcp. Risk of protocol version drift. | rmcp (official, actively maintained, 3K+ stars) |
 
----
+## Stack Patterns by Architecture
 
-## Risk Assessment
+**Pattern A: MCP as separate binary (NOT recommended)**
+- Separate `crates/mcp-server/` binary
+- Connects to relay via HTTP API to read docs
+- Runs its own tantivy instance
+- Two processes on VPS (relay + mcp)
+- Simpler isolation but wastes RAM and adds latency
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| `discord-markdown-parser` has edge cases / breaks on unusual Discord formatting | MEDIUM | LOW | Package is small (~300 LOC), MIT licensed. Fork if needed. MVP uses plain text only. |
-| Discord rate limits hit when many users load history simultaneously | LOW | MEDIUM | Cache message history in sidecar memory (TTL 30s). Deduplicate concurrent requests to same channel. discord.js handles REST rate limits automatically. |
-| Bot gateway disconnects during sidecar restarts | LOW | LOW | discord.js auto-reconnects. SSE clients auto-reconnect. Brief gap in live messages (acceptable for chat panel). |
-| MESSAGE_CONTENT privileged intent requires Discord review | LOW (for <100 servers) | HIGH (if denied) | Bot is in a single server. Privileged intents are self-service for bots in <100 servers. No review needed. |
-| Hono SSE streaming doesn't work through Cloudflare tunnel | LOW | HIGH | SSE is standard HTTP. Cloudflare supports it natively. Test early in development. Fallback: polling endpoint. |
+**Pattern B: MCP integrated into relay binary (RECOMMENDED)**
+- New `crates/mcp-search/` library crate
+- Relay binary imports and mounts MCP routes alongside existing Axum routes
+- Shares DashMap access to in-memory Y.Docs
+- Tantivy index managed by the search module
+- Single process, single tokio runtime, minimal overhead
 
----
+Why Pattern B:
+- The relay already has all Y.Doc content in memory
+- The link indexer (`link_indexer.rs`) already demonstrates the pattern of background workers processing doc updates via mpsc channels
+- Search indexing follows the exact same pattern: debounced doc updates -> extract text -> update tantivy index
+- MCP tools can query tantivy directly without network hops
+
+**If deploying MCP on a separate machine later:**
+- Extract the MCP crate to its own binary
+- Connect to relay via HTTP API (using the existing Python SDK pattern, ported to Rust)
+- This is a future concern, not a present one
+
+## Version Compatibility
+
+| Package A | Compatible With | Notes |
+|-----------|-----------------|-------|
+| rmcp 0.14 | axum 0.8 | rmcp's `transport-streamable-http-server` feature depends on axum 0.8. Relay currently uses axum 0.7.4 -- **must upgrade**. |
+| rmcp 0.14 | schemars 1.0 | rmcp uses schemars 1.0 with `chrono04` feature for JSON Schema generation (2020-12 draft). This is a different major version from schemars 0.8. |
+| rmcp 0.14 | tokio 1.x | Compatible with the relay's existing tokio 1.29+. |
+| tantivy 0.25 | tokio 1.x | tantivy's async operations use tokio 1.x. |
+| tantivy 0.25 | serde 1.0 | Compatible for serializing search results. |
+| axum 0.8 | axum-extra 0.9 | Relay uses axum-extra 0.9.2 -- check if it needs updating to match axum 0.8. |
+
+**Critical upgrade note:** The Axum 0.7 -> 0.8 upgrade is the only breaking change. Key differences:
+- `State` extraction changes
+- Handler trait signature updates
+- Should be a focused PR before MCP work begins
+
+## Memory Budget (4GB VPS)
+
+| Component | Estimated Memory | Notes |
+|-----------|------------------|-------|
+| Linux OS + services | ~500MB | Baseline |
+| relay-server (current) | ~200-400MB | Y.Docs in memory, WebSocket connections |
+| tantivy index (mmap) | ~10-50MB resident | MmapDirectory means only hot pages resident. Index size on disk may be larger but OS manages page cache. |
+| MCP server (in-process) | ~0MB additional | Shares relay process. Per-request allocations are transient. |
+| Docker overhead | ~100MB | Container runtime |
+| **Total** | **~810-1050MB** | Comfortable within 4GB, leaves 3GB for page cache and spikes |
+
+tantivy's mmap approach is critical here: the index can be larger on disk, but only accessed pages consume RAM. For a corpus of hundreds to low thousands of markdown documents, the index will be small (tens of MB on disk, single-digit MB resident).
 
 ## Sources
 
-- [discord.js npm package](https://www.npmjs.com/package/discord.js) - Version and publish date
-- [discord.js documentation](https://discord.js.org/docs) - API reference, v14.25.1
-- [discord.js guide - Webhooks](https://discordjs.guide/popular-topics/webhooks.html) - Webhook posting with custom username/avatar
-- [@discordjs/rest npm](https://www.npmjs.com/package/@discordjs/rest) - Standalone REST package (v2.6.0)
-- [@discordjs/ws npm](https://www.npmjs.com/package/@discordjs/ws) - Standalone gateway WS package (v2.0.4)
-- [@discordjs/core npm](https://www.npmjs.com/package/@discordjs/core) - Lightweight core wrapper
-- [Discord Developer Portal - Gateway](https://discord.com/developers/docs/events/gateway) - Gateway intents, events
-- [Discord Developer Portal - Channel Messages](https://discord.com/developers/docs/resources/channel) - REST API for message history
-- [Discord Developer Portal - Rate Limits](https://discord.com/developers/docs/topics/rate-limits) - Rate limit documentation
-- [Discord Webhooks Guide](https://birdie0.github.io/discord-webhooks-guide/discord_webhook.html) - Webhook rate limits, payload format
-- [MESSAGE_CONTENT Privileged Intent FAQ](https://support-dev.discord.com/hc/en-us/articles/4404772028055-Message-Content-Privileged-Intent-FAQ) - Intent requirements
-- [Hono - Streaming Helper](https://hono.dev/docs/helpers/streaming) - SSE streaming documentation
-- [Hono npm package](https://www.npmjs.com/package/hono) - Version 4.11.9
-- [@hono/node-server npm](https://www.npmjs.com/package/@hono/node-server) - Node.js adapter v1.19.9
-- [discord-markdown-parser npm](https://www.npmjs.com/package/discord-markdown-parser) - v1.3.1, Discord markdown AST parser
-- [discord-markdown-parser GitHub](https://github.com/ItzDerock/discord-markdown-parser) - Source and maintenance status
-- [WidgetBot](https://widgetbot.io/) - Evaluated and rejected (requires OAuth, not customizable enough)
-- [Discord.js v15 Guide](https://discordjs.guide/v15) - Pre-release status confirmed
+- [rmcp on docs.rs (v0.14.0)](https://docs.rs/rmcp/latest/rmcp/) -- verified version, API, features (HIGH confidence)
+- [rmcp GitHub (official Rust SDK)](https://github.com/modelcontextprotocol/rust-sdk) -- verified stars, contributors, release count (HIGH confidence)
+- [tantivy on docs.rs (v0.25.0)](https://docs.rs/tantivy/latest/tantivy/) -- verified version, modules (HIGH confidence)
+- [tantivy GitHub](https://github.com/quickwit-oss/tantivy) -- verified memory model, MmapDirectory, benchmarks (HIGH confidence)
+- [rusqlite on docs.rs (v0.38.0)](https://docs.rs/rusqlite/latest/rusqlite/) -- verified version (HIGH confidence)
+- [rusqlite build.rs](https://github.com/rusqlite/rusqlite/blob/master/libsqlite3-sys/build.rs) -- verified bundled feature enables SQLITE_ENABLE_FTS5 (HIGH confidence)
+- [MCP official SDKs page](https://modelcontextprotocol.io/docs/sdk) -- verified all official SDKs listed (HIGH confidence)
+- [MCP transport spec](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) -- verified SSE deprecation, Streamable HTTP as standard (HIGH confidence)
+- [Shuttle blog: Streamable HTTP MCP in Rust](https://www.shuttle.dev/blog/2025/10/29/stream-http-mcp) -- rmcp + axum integration pattern (MEDIUM confidence)
+- [tantivy memory model blog](https://fulmicoton.com/posts/behold-tantivy/) -- MmapDirectory and memory characteristics (MEDIUM confidence)
+- [CriticMarkup spec](https://fletcher.github.io/MultiMarkdown-6/syntax/critic.html) -- CriticMarkup syntax for MCP edit suggestions (HIGH confidence)
+- Existing codebase: `crates/relay/Cargo.toml`, `crates/y-sweet-core/src/link_indexer.rs`, `python/src/relay_sdk/` -- verified current dependencies and patterns (HIGH confidence)
+
+---
+*Stack research for: MCP server + keyword search index in CRDT document collaboration system*
+*Researched: 2026-02-08*

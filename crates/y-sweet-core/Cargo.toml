@@ -47,6 +47,7 @@ yrs = { version = "0.19.1" }
 yrs-kvstore = "0.3.0"
 prometheus = "0.13"
 dashmap = "6.0.1"
+tantivy = "0.25"
 
 [dev-dependencies]
 tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }

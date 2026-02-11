@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "lens-relay": {
+      "url": "http://localhost:8390/mcp"
+    }
+  }
+}

@@ -1,0 +1,86 @@
+#!/bin/bash
+#
+# List running dev servers across all lens-relay workspaces.
+# Discovers servers by checking known port ranges.
+#
+# Port conventions (from CLAUDE.local.md):
+#   ws1: Vite 5173, Relay 8090
+#   ws2: Vite 5273, Relay 8190
+#   wsN: Vite 5173+(N-1)*100, Relay 8090+(N-1)*100
+#
+# Usage:
+#   ./scripts/list-servers          # List all running servers
+#   ./scripts/list-servers --mine   # List only servers from current workspace
+#
+
+set -euo pipefail
+
+MAX_WS=4  # Check ws1 through ws4
+
+# Detect current workspace from directory name
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+DIR_NAME=$(basename "$PROJECT_DIR")
+if [[ "$DIR_NAME" =~ ws([0-9]+)$ ]]; then
+    CURRENT_WS="${BASH_REMATCH[1]}"
+else
+    CURRENT_WS=1
+fi
+
+MINE_ONLY=false
+if [[ "${1:-}" == "--mine" ]]; then
+    MINE_ONLY=true
+fi
+
+# Colors
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RESET='\033[0m'
+
+# Print header
+printf "${BOLD}%-8s %-7s %-8s %-6s %s${RESET}\n" "SERVICE" "PORT" "PID" "WS" "COMMAND"
+printf "%-8s %-7s %-8s %-6s %s\n" "-------" "----" "---" "--" "-------"
+
+found=0
+
+for ws in $(seq 1 $MAX_WS); do
+    if $MINE_ONLY && [[ "$ws" -ne "$CURRENT_WS" ]]; then
+        continue
+    fi
+
+    relay_port=$((8090 + (ws - 1) * 100))
+    vite_port=$((5173 + (ws - 1) * 100))
+
+    # Check relay server
+    relay_pid=$(lsof -ti:"$relay_port" -sTCP:LISTEN 2>/dev/null || true)
+    if [[ -n "$relay_pid" ]]; then
+        # Get the command name (first line if multiple PIDs)
+        pid=$(echo "$relay_pid" | head -1)
+        cmd=$(ps -p "$pid" -o args= 2>/dev/null | head -c 40)
+        marker=""
+        [[ "$ws" -eq "$CURRENT_WS" ]] && marker=" ${GREEN}*${RESET}"
+        printf "%-8s %-7s %-8s ${YELLOW}ws%-4s${RESET}%b %s\n" "relay" "$relay_port" "$pid" "$ws" "$marker" "$cmd"
+        found=$((found + 1))
+    fi
+
+    # Check vite server
+    vite_pid=$(lsof -ti:"$vite_port" -sTCP:LISTEN 2>/dev/null || true)
+    if [[ -n "$vite_pid" ]]; then
+        pid=$(echo "$vite_pid" | head -1)
+        cmd=$(ps -p "$pid" -o args= 2>/dev/null | head -c 40)
+        marker=""
+        [[ "$ws" -eq "$CURRENT_WS" ]] && marker=" ${GREEN}*${RESET}"
+        printf "%-8s %-7s %-8s ${YELLOW}ws%-4s${RESET}%b %s\n" "vite" "$vite_port" "$pid" "$ws" "$marker" "$cmd"
+        found=$((found + 1))
+    fi
+done
+
+if [[ $found -eq 0 ]]; then
+    echo "(no servers running)"
+fi
+
+echo ""
+printf "${DIM}Current workspace: ws%s  (* = yours)${RESET}\n" "$CURRENT_WS"
+printf "${DIM}Kill by port: lsof -ti:<PORT> | xargs kill${RESET}\n"

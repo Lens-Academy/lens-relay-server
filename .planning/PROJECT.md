@@ -1,85 +1,96 @@
-# Discord Discussion Panel
+# Lens Relay: Search & MCP
 
 ## What This Is
 
-An interactive Discord chat panel embedded in the lens-editor web client. When a document has a `discussion` frontmatter field linking to a Discord channel or forum thread, the editor shows that conversation alongside the document — users can read messages in real time and post via bot API using a self-reported name with "(unverified)" tag.
+A keyword search index and MCP server for the Lens Relay ecosystem. The search index provides full-text BM25-ranked search across all documents in the Lens and Lens Edu shared folders, exposed to users via a search UI in lens-editor and to AI assistants via 5 MCP tools. The MCP server runs embedded in the relay server at `/mcp`, giving AI assistants the ability to list, read, search, navigate links, and propose CriticMarkup edits to relay documents.
 
 ## Core Value
 
-Users can participate in the Discord discussion about a document without leaving the editor.
+AI assistants can find and work with the right documents across the knowledge base — not just access individual docs by name, but discover relevant content through search and link traversal.
 
 ## Requirements
 
 ### Validated
 
-- ✓ Relay documents have YAML frontmatter with metadata fields (id, slug, title) — existing
-- ✓ Web editor renders markdown documents with CodeMirror — existing
-- ✓ Real-time document sync via WebSocket/yjs — existing
-- ✓ Relay server handles document auth and WebSocket connections — existing
-- ✓ Editor detects `discussion` frontmatter field pointing to a Discord channel/thread — v1
-- ✓ Discord chat panel displays message history from the linked channel — v1
-- ✓ Messages stream in live as they're posted in Discord — v1
-- ✓ Users can post messages via bot API with their self-reported name and "(unverified)" tag — v1
-- ✓ Messages show Discord username and avatar for Discord-native messages — v1
-- ✓ Supports forum thread channels — v1
-- ✓ Supports regular text channels — v1
-- ✓ Discord-flavored markdown rendering (bold, italic, code, quotes, strikethrough) — v1
-- ✓ Auto-scroll with "new messages" indicator — v1
-- ✓ Connection resilience with status indicator and retry — v1
-- ✓ Display name persisted in localStorage — v1
-- ✓ Bot token never exposed to browser — v1
+- ✓ Real-time collaborative document editing via WebSocket/yjs — existing
+- ✓ Document persistence to Cloudflare R2 — existing
+- ✓ Token-based authentication (HMAC/CWT) — existing
+- ✓ Folder metadata management (filemeta_v0, docs maps) — existing
+- ✓ Wikilink extraction and backlink indexing (server-side) — existing
+- ✓ Web editor with CodeMirror + yjs binding — existing
+- ✓ CriticMarkup rendering in editor — existing
+- ✓ File attachment upload/download via presigned URLs — existing
+- ✓ Webhook dispatch on document changes — existing
+- ✓ Full-text keyword search index across Lens and Lens Edu folders — v1.0
+- ✓ Search API accessible by both lens-editor and MCP server — v1.0
+- ✓ Search UI in lens-editor (search bar, results with snippets, click-to-navigate) — v1.0
+- ✓ MCP server embedded in relay at /mcp endpoint — v1.0
+- ✓ MCP tool: list all documents (glob) — v1.0
+- ✓ MCP tool: read document content (cat -n format) — v1.0
+- ✓ MCP tool: edit document via CriticMarkup suggestions — v1.0
+- ✓ MCP tool: regex keyword search across documents (grep) — v1.0
+- ✓ MCP tool: backlinks and forward links (get_links, single-hop) — v1.0
+- ✓ Index updates when documents change (debounced) — v1.0
+- ✓ Read-before-edit enforcement per MCP session — v1.0
 
 ### Active
 
-(No active requirements — next milestone TBD)
+(No active requirements — next milestone not yet planned)
 
 ### Out of Scope
 
-- Rich message rendering (embeds, reactions, replies, images) — v2
-- Discord OAuth login — unnecessary complexity, self-reported name is sufficient
-- Verified identity linking between Relay accounts and Discord — future feature
-- Reusing the lens-platform Discord bot — separate systems, avoid premature coupling
-- Mobile-optimized layout — editor UI overhaul planned separately
-- Discord mention resolution (`<@id>` → `@Username`) — requires additional API calls, deferred
+- Semantic/vector search (Pinecone, embeddings) — defer to future milestone
+- Discord bot integration — requires separate codebase, defer
+- Custom AuthZ / Discord OAuth — being handled separately
+- Content validation — handled externally for now
+- Direct document writes from MCP — CriticMarkup suggestions only, for safety without auth
+- Mobile app — web-first
+- SSE transport for MCP — Streamable HTTP POST sufficient for current use
+- Multi-hop graph traversal — single-hop covers primary use case
+- MCP Prompts — tools sufficient for v1
 
 ## Context
 
-Shipped v1 with 4,676 LOC TypeScript across 69 files.
+Shipped v1.0 with ~4,270 LOC across Rust and TypeScript.
 
-**Architecture:**
-- `discord-bridge/` — Hono-based Node.js sidecar proxy (Gateway + REST + SSE + posting)
-- `lens-editor/src/components/DiscussionPanel/` — React panel with hooks, markdown renderer, compose box
-- `lens-editor/src/lib/` — Shared utilities (frontmatter, discord-url, avatar, timestamp)
-- `lens-editor/src/contexts/DisplayNameContext.tsx` — App-global display name state
+Tech stack: Rust (relay server with tantivy search + custom MCP), TypeScript/React (lens-editor with search UI).
 
-**Tech stack additions:** Hono, discord.js, discord-markdown-parser, react-textarea-autosize, front-matter
+New modules:
+- `crates/relay/src/mcp/` — 2,840 LOC Rust (JSON-RPC, sessions, transport, 5 tools)
+- `crates/y-sweet-core/src/search_index.rs` — 496 LOC Rust (tantivy BM25 search)
+- `crates/y-sweet-core/src/doc_resolver.rs` — 414 LOC Rust (path-UUID resolution)
+- `lens-editor/src/` — 520 LOC TypeScript (useSearch hook, SearchPanel component)
 
-**Known issues:**
-- Discord mention placeholders show raw IDs (need API calls to resolve)
-- No `.env.example` in discord-bridge for token documentation
-- Orphaned `/api/gateway/status` endpoint (unused, SSE provides status)
+95+ automated tests (80 Rust, 18 search UI). All passing.
+
+Two shared folders indexed:
+- **Lens** — main knowledge base
+- **Lens Edu** — educational content
+
+Infrastructure: Hetzner VPS (4GB RAM), Docker containers, Cloudflare R2 storage, Cloudflare Tunnel.
 
 ## Constraints
 
-- **Discord API**: Bot token required for reading messages and gateway events
-- **Rate limits**: Discord API has rate limits (~50 requests/second global, per-channel limits on message sends)
-- **Bot permissions**: Needs MESSAGE_CONTENT intent (privileged) to read message content
-- **Bot API posting**: Messages posted via bot show user's name formatted as "Name (unverified)" in message content
-- **Stack**: React/TypeScript frontend, Vite build, Hono sidecar
+- **Runtime environment**: Hetzner VPS (4GB RAM) — search index uses tantivy MmapDirectory (memory-safe)
+- **Existing stack**: Rust (relay server) + TypeScript/React (lens-editor)
+- **Auth**: No custom AuthZ yet — MCP edits use CriticMarkup as safety mechanism
+- **No external MCP SDK**: Custom JSON-RPC handlers (5 tools, full control over session state)
+- **Deployment**: Docker containers on same VPS as relay server
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Build new Discord bot vs reuse lens-platform bot | Separate systems, avoid coupling, Discord bots are simple | ✓ Good — clean separation, dedicated sidecar |
-| Self-reported name with "(unverified)" tag | No Discord OAuth needed, low friction, honest about verification | ✓ Good — server-side suffix enforcement |
-| Discord markdown first (not plain text) | discord-markdown-parser handles AST rendering safely | ✓ Good — shipped in v1, no XSS risk |
-| Hono sidecar for Discord bridge | 14KB vs Express 572KB, TypeScript-native, perfect for proxy | ✓ Good — fast, minimal |
-| Bot API instead of webhooks for posting | Simpler setup, reuses existing bot token, no webhook URL management | ✓ Good — user preferred simplicity |
-| IntersectionObserver for scroll detection | 1px sentinel more reliable than scroll math | ✓ Good — clean implementation |
-| AST-to-React for markdown (no innerHTML) | XSS-free rendering, React-native component tree | ✓ Good — safe and composable |
-| ConnectedDiscussionPanel wrapper pattern | Separates YDocProvider context from testable component | ✓ Good — clean testing |
-| 75s heartbeat timeout (2.5x interval) | Balances false positives vs detection speed | ✓ Good — reliable in practice |
+| CriticMarkup for MCP edits | No custom AuthZ yet; suggestions are safe without permission checks | ✓ Good — provides reviewable AI suggestions |
+| Keyword search only (no semantic) | Keeps scope tight; semantic search deferred to future milestone | ✓ Good — BM25 sufficient for knowledge base search |
+| Search index as shared service | Both lens-editor and MCP need search; avoids duplication | ✓ Good — single index, two consumers |
+| MCP embedded in relay (`/mcp` endpoint) | URL-based setup for collaborators, direct access to Y.Docs and search index | ✓ Good — zero-install for AI assistants |
+| Custom MCP transport (no rmcp) | 5 tools doesn't justify a framework; avoids Axum 0.7→0.8 upgrade; gives control over session state | ✓ Good — 2,840 LOC, full control |
+| Read-before-edit enforcement | Session tracks read docs, rejects edits on unread docs; mirrors Claude Code's Edit tool pattern | ✓ Good — prevents blind AI edits |
+| JSON-RPC parse by id field presence | Clearer than serde untagged enum; handles null id per spec | ✓ Good — clean implementation |
+| Grep via regex on Y.Docs (not tantivy) | Grep is for pattern matching, search is for BM25 ranking | ✓ Good — each tool does one thing well |
+| TOCTOU re-verify in edit transactions | Re-read content at write time to prevent stale edits | ✓ Good — prevents data corruption |
+| 300ms debounce for search UI | Prevents API spam during typing; correct for server-side requests | ✓ Good — smooth UX |
 
 ---
-*Last updated: 2026-02-11 after v1 milestone*
+*Last updated: 2026-02-11 after v1.0 milestone*

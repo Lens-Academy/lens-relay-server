@@ -34,6 +34,7 @@ use tokio::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{span, Instrument, Level};
 use url::Url;
+use yrs::{GetString, Map, ReadTxn, Transact};
 use y_sweet_core::{
     api_types::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken,
@@ -47,8 +48,10 @@ use y_sweet_core::{
         DebouncedSyncProtocolEventSender, DocumentUpdatedEvent, EventDispatcher, EventEnvelope,
         EventSender, SyncProtocolEventSender, UnifiedEventDispatcher, WebhookSender,
     },
-    link_indexer::LinkIndexer,
+    doc_resolver::DocumentResolver,
+    link_indexer::{self, LinkIndexer},
     metrics::RelayMetrics,
+    search_index::SearchIndex,
     store::Store,
     sync::awareness::Awareness,
     sync_kv::SyncKv,
@@ -162,6 +165,259 @@ struct FileDownloadParams {
     hash: String,
 }
 
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    20
+}
+
+// ---------------------------------------------------------------------------
+// Search index background worker
+// ---------------------------------------------------------------------------
+
+const SEARCH_DEBOUNCE: Duration = Duration::from_secs(2);
+
+/// Background worker for incremental search index updates.
+///
+/// Follows the same debounce pattern as LinkIndexer::run_worker:
+/// - Content docs: debounce 2 seconds, then re-read Y.Text("contents") and upsert
+/// - Folder docs: process immediately, detect added/removed docs, update search index
+async fn search_worker(
+    mut rx: tokio::sync::mpsc::Receiver<String>,
+    search_index: Arc<SearchIndex>,
+    docs: Arc<DashMap<String, DocWithSyncKv>>,
+    pending: Arc<DashMap<String, tokio::time::Instant>>,
+) {
+    tracing::info!("Search index worker started");
+
+    // Cache of folder doc -> { uuid -> (path, title) } for detecting adds/removes
+    let filemeta_cache: DashMap<String, std::collections::HashMap<String, String>> =
+        DashMap::new();
+
+    loop {
+        match rx.recv().await {
+            Some(doc_id) => {
+                let folder_content = link_indexer::is_folder_doc(&doc_id, &docs);
+
+                if folder_content.is_none() {
+                    // Content doc — debounce: wait until no updates for SEARCH_DEBOUNCE
+                    loop {
+                        tokio::time::sleep(SEARCH_DEBOUNCE).await;
+                        if let Some(entry) = pending.get(&doc_id) {
+                            if entry.elapsed() >= SEARCH_DEBOUNCE {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Remove from pending
+                pending.remove(&doc_id);
+
+                if let Some(content_uuids) =
+                    folder_content.or_else(|| link_indexer::is_folder_doc(&doc_id, &docs))
+                {
+                    // Folder doc — detect added/removed documents
+                    search_handle_folder_update(
+                        &doc_id,
+                        &content_uuids,
+                        &docs,
+                        &search_index,
+                        &filemeta_cache,
+                        &pending,
+                        &rx,
+                    )
+                    .await;
+                } else {
+                    // Content doc — reindex into search
+                    search_handle_content_update(&doc_id, &docs, &search_index);
+                }
+            }
+            None => break,
+        }
+    }
+}
+
+/// Handle a content doc update: read body, look up title from folder metadata, upsert into search index.
+fn search_handle_content_update(
+    doc_id: &str,
+    docs: &DashMap<String, DocWithSyncKv>,
+    search_index: &SearchIndex,
+) {
+    let Some((_relay_id, doc_uuid)) = link_indexer::parse_doc_id(doc_id) else {
+        return;
+    };
+
+    // Read Y.Text("contents") body
+    let body = {
+        let Some(doc_ref) = docs.get(doc_id) else {
+            return;
+        };
+        let awareness = doc_ref.awareness();
+        let guard = awareness.read().unwrap();
+        let txn = guard.doc.transact();
+        match txn.get_text("contents") {
+            Some(text) => text.get_string(&txn),
+            None => String::new(),
+        }
+    };
+
+    // Find which folder doc contains this UUID and extract title
+    let (title, folder_name) = search_find_title_and_folder(doc_uuid, docs);
+
+    match search_index.add_document(doc_uuid, &title, &body, &folder_name) {
+        Ok(()) => tracing::debug!("Search indexed content doc: {} ({})", doc_uuid, title),
+        Err(e) => tracing::error!("Search index failed for {}: {:?}", doc_uuid, e),
+    }
+}
+
+/// Find the title and folder name for a content doc UUID by scanning all folder docs' filemeta_v0.
+fn search_find_title_and_folder(
+    doc_uuid: &str,
+    docs: &DashMap<String, DocWithSyncKv>,
+) -> (String, String) {
+    let folder_doc_ids = link_indexer::find_all_folder_docs(docs);
+
+    for (folder_idx, folder_doc_id) in folder_doc_ids.iter().enumerate() {
+        let Some(doc_ref) = docs.get(folder_doc_id) else {
+            continue;
+        };
+        let awareness = doc_ref.awareness();
+        let guard = awareness.read().unwrap();
+        let txn = guard.doc.transact();
+        let Some(filemeta) = txn.get_map("filemeta_v0") else {
+            continue;
+        };
+
+        for (path, value) in filemeta.iter(&txn) {
+            if let Some(id) = link_indexer::extract_id_from_filemeta_entry(&value, &txn) {
+                if id == doc_uuid {
+                    // Extract title: strip leading "/" and trailing ".md", take basename
+                    let path_str: &str = path;
+                    let title = path_str
+                        .strip_prefix('/')
+                        .unwrap_or(path_str)
+                        .strip_suffix(".md")
+                        .unwrap_or(path_str)
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(path_str)
+                        .to_string();
+
+                    // Derive folder name from folder doc position
+                    // First folder doc = "Lens", second = "Lens Edu"
+                    let folder_name = if folder_idx == 0 {
+                        "Lens".to_string()
+                    } else {
+                        "Lens Edu".to_string()
+                    };
+
+                    return (title, folder_name);
+                }
+            }
+        }
+    }
+
+    // Not found in any folder doc — use UUID as title
+    (doc_uuid.to_string(), "Unknown".to_string())
+}
+
+/// Handle folder doc update: detect added/removed UUIDs, update search index accordingly.
+async fn search_handle_folder_update(
+    folder_doc_id: &str,
+    content_uuids: &[String],
+    docs: &DashMap<String, DocWithSyncKv>,
+    search_index: &SearchIndex,
+    filemeta_cache: &DashMap<String, std::collections::HashMap<String, String>>,
+    pending: &DashMap<String, tokio::time::Instant>,
+    _rx: &tokio::sync::mpsc::Receiver<String>,
+) {
+    // Build current uuid -> title map from filemeta
+    let current_map: std::collections::HashMap<String, String> = {
+        let Some(doc_ref) = docs.get(folder_doc_id) else {
+            return;
+        };
+        let awareness = doc_ref.awareness();
+        let guard = awareness.read().unwrap();
+        let txn = guard.doc.transact();
+        let Some(filemeta) = txn.get_map("filemeta_v0") else {
+            return;
+        };
+
+        let mut map = std::collections::HashMap::new();
+        for (path, value) in filemeta.iter(&txn) {
+            if let Some(id) = link_indexer::extract_id_from_filemeta_entry(&value, &txn) {
+                let path_str: &str = path;
+                let title = path_str
+                    .strip_prefix('/')
+                    .unwrap_or(path_str)
+                    .strip_suffix(".md")
+                    .unwrap_or(path_str)
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(path_str)
+                    .to_string();
+                map.insert(id, title);
+            }
+        }
+        map
+    };
+
+    // Get old snapshot from cache
+    let old_map = filemeta_cache
+        .get(folder_doc_id)
+        .map(|r| r.clone());
+
+    // Update cache with current snapshot
+    filemeta_cache.insert(folder_doc_id.to_string(), current_map.clone());
+
+    if let Some(old_map) = old_map {
+        // Detect removed UUIDs
+        for uuid in old_map.keys() {
+            if !current_map.contains_key(uuid) {
+                match search_index.remove_document(uuid) {
+                    Ok(()) => tracing::info!("Search: removed doc {}", uuid),
+                    Err(e) => tracing::error!("Search: failed to remove {}: {:?}", uuid, e),
+                }
+            }
+        }
+
+        // Detect added or renamed UUIDs — queue them for content indexing
+        let Some((relay_id, _)) = link_indexer::parse_doc_id(folder_doc_id) else {
+            return;
+        };
+        for (uuid, new_title) in &current_map {
+            let old_title = old_map.get(uuid);
+            if old_title.is_none() || old_title != Some(new_title) {
+                // New or renamed — reindex content
+                let content_id = format!("{}-{}", relay_id, uuid);
+                if docs.contains_key(&content_id) {
+                    pending.insert(content_id.clone(), tokio::time::Instant::now());
+                    search_handle_content_update(&content_id, docs, search_index);
+                }
+            }
+        }
+    } else {
+        // First time seeing this folder doc — index all content docs
+        let Some((relay_id, _)) = link_indexer::parse_doc_id(folder_doc_id) else {
+            return;
+        };
+        for uuid in content_uuids {
+            let content_id = format!("{}-{}", relay_id, uuid);
+            if docs.contains_key(&content_id) {
+                search_handle_content_update(&content_id, docs, search_index);
+            }
+        }
+    }
+}
+
 pub struct Server {
     docs: Arc<DashMap<String, DocWithSyncKv>>,
     doc_worker_tracker: TaskTracker,
@@ -179,6 +435,11 @@ pub struct Server {
     sync_protocol_event_sender: Arc<SyncProtocolEventSender>,
     metrics: Arc<RelayMetrics>,
     link_indexer: Option<Arc<LinkIndexer>>,
+    search_index: Option<Arc<SearchIndex>>,
+    search_ready: Arc<std::sync::atomic::AtomicBool>,
+    search_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    doc_resolver: Arc<DocumentResolver>,
+    pub(crate) mcp_sessions: Arc<crate::mcp::session::SessionManager>,
 }
 
 impl Server {
@@ -243,6 +504,44 @@ impl Server {
                 .await;
         });
 
+        // Create SearchIndex with MmapDirectory in a temp directory
+        let index_path = std::env::temp_dir().join("lens-relay-search-index");
+        // Clean the directory on startup to ensure a fresh index
+        if index_path.exists() {
+            let _ = std::fs::remove_dir_all(&index_path);
+        }
+        let search_index = match SearchIndex::new(&index_path) {
+            Ok(si) => {
+                tracing::info!("SearchIndex created at {:?}", index_path);
+                Some(Arc::new(si))
+            }
+            Err(e) => {
+                tracing::error!("Failed to create SearchIndex: {:?}", e);
+                None
+            }
+        };
+        let search_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // Spawn background worker for search index updates
+        let search_tx_final = if let Some(ref si) = search_index {
+            let (search_tx, search_rx) = tokio::sync::mpsc::channel::<String>(1000);
+            let si_for_worker = si.clone();
+            let docs_for_search = docs.clone();
+            let search_pending: Arc<DashMap<String, tokio::time::Instant>> =
+                Arc::new(DashMap::new());
+
+            tokio::spawn(search_worker(
+                search_rx,
+                si_for_worker,
+                docs_for_search,
+                search_pending,
+            ));
+
+            Some(search_tx)
+        } else {
+            None
+        };
+
         Ok(Self {
             docs,
             doc_worker_tracker: TaskTracker::new(),
@@ -257,6 +556,48 @@ impl Server {
             sync_protocol_event_sender,
             metrics,
             link_indexer: Some(link_indexer),
+            search_index,
+            search_ready,
+            search_tx: search_tx_final,
+            doc_resolver: Arc::new(DocumentResolver::new()),
+            mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
+        })
+    }
+
+    /// Get the DocumentResolver for path-to-UUID resolution.
+    pub fn doc_resolver(&self) -> &Arc<DocumentResolver> {
+        &self.doc_resolver
+    }
+
+    /// Get the DashMap of all loaded documents.
+    pub fn docs(&self) -> &Arc<DashMap<String, DocWithSyncKv>> {
+        &self.docs
+    }
+
+    /// Create a minimal Server for testing. No store, no auth, no search.
+    #[cfg(test)]
+    pub fn new_for_test() -> Arc<Self> {
+        Arc::new(Self {
+            docs: Arc::new(DashMap::new()),
+            doc_worker_tracker: TaskTracker::new(),
+            store: None,
+            checkpoint_freq: Duration::from_secs(60),
+            authenticator: None,
+            url: None,
+            allowed_hosts: Vec::new(),
+            cancellation_token: CancellationToken::new(),
+            doc_gc: std::sync::atomic::AtomicBool::new(false),
+            event_dispatcher: None,
+            sync_protocol_event_sender: Arc::new(
+                y_sweet_core::event::SyncProtocolEventSender::new(),
+            ),
+            metrics: RelayMetrics::new().expect("metrics init should not fail in tests"),
+            link_indexer: None,
+            search_index: None,
+            search_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            search_tx: None,
+            doc_resolver: Arc::new(DocumentResolver::new()),
+            mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
         })
     }
 
@@ -328,6 +669,7 @@ impl Server {
             let routing_channel_for_callback = routing_channel_name.clone();
             let user_for_callback = user.clone();
             let link_indexer_for_callback = self.link_indexer.clone();
+            let search_tx_for_callback = self.search_tx.clone();
             let doc_key_for_indexer = doc_id.to_string();
 
             if let Some(dispatcher) = event_dispatcher {
@@ -357,28 +699,43 @@ impl Server {
                     dispatcher.send_event(envelope);
 
                     // Notify link indexer (if this update is not from the indexer itself)
-                    if let Some(ref indexer) = link_indexer_for_callback {
-                        if y_sweet_core::link_indexer::should_index() {
+                    if y_sweet_core::link_indexer::should_index() {
+                        if let Some(ref indexer) = link_indexer_for_callback {
                             let indexer = indexer.clone();
                             let doc_key = doc_key_for_indexer.clone();
                             tokio::spawn(async move {
                                 indexer.on_document_update(&doc_key).await;
                             });
                         }
+
+                        // Notify search index worker
+                        if let Some(ref tx) = search_tx_for_callback {
+                            let _ = tx.try_send(doc_key_for_indexer.clone());
+                        }
                     }
                 }) as y_sweet_core::webhook::WebhookCallback)
             } else {
                 // Even without event dispatcher, we still want indexing
-                if let Some(ref link_indexer) = link_indexer_for_callback {
-                    let indexer = link_indexer.clone();
+                let has_indexer = link_indexer_for_callback.is_some();
+                let has_search = search_tx_for_callback.is_some();
+                if has_indexer || has_search {
+                    let indexer = link_indexer_for_callback.clone();
+                    let search_tx = search_tx_for_callback.clone();
                     let doc_key = doc_key_for_indexer.clone();
                     Some(Arc::new(move |_event: DocumentUpdatedEvent| {
                         if y_sweet_core::link_indexer::should_index() {
-                            let indexer = indexer.clone();
-                            let doc_key = doc_key.clone();
-                            tokio::spawn(async move {
-                                indexer.on_document_update(&doc_key).await;
-                            });
+                            if let Some(ref indexer) = indexer {
+                                let indexer = indexer.clone();
+                                let doc_key = doc_key.clone();
+                                tokio::spawn(async move {
+                                    indexer.on_document_update(&doc_key).await;
+                                });
+                            }
+
+                            // Notify search index worker
+                            if let Some(ref tx) = search_tx {
+                                let _ = tx.try_send(doc_key.clone());
+                            }
                         }
                     }) as y_sweet_core::webhook::WebhookCallback)
                 } else {
@@ -502,6 +859,9 @@ impl Server {
     pub async fn startup_reindex(&self) -> Result<()> {
         if self.store.is_none() {
             tracing::info!("No store configured, skipping startup reindex");
+            // Even without a store, mark search as ready (empty index)
+            self.search_ready
+                .store(true, std::sync::atomic::Ordering::Release);
             return Ok(());
         }
 
@@ -511,6 +871,106 @@ impl Server {
         if let Some(ref indexer) = self.link_indexer {
             indexer.reindex_all_backlinks(&self.docs)?;
         }
+
+        // Build document resolver (bidirectional path <-> UUID mapping)
+        self.doc_resolver.rebuild(&self.docs);
+        tracing::info!(
+            "Document resolver built: {} documents",
+            self.doc_resolver.all_paths().len()
+        );
+
+        // Build search index from all loaded documents
+        if let Some(ref search_index) = self.search_index {
+            tracing::info!("Building search index from loaded documents...");
+            let mut indexed = 0;
+
+            // Find all folder docs and build uuid -> (title, folder_name) map
+            let folder_doc_ids = link_indexer::find_all_folder_docs(&self.docs);
+            let mut uuid_metadata: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new();
+
+            for (folder_idx, folder_doc_id) in folder_doc_ids.iter().enumerate() {
+                let folder_name = if folder_idx == 0 {
+                    "Lens".to_string()
+                } else {
+                    "Lens Edu".to_string()
+                };
+
+                let Some(doc_ref) = self.docs.get(folder_doc_id) else {
+                    continue;
+                };
+                let awareness = doc_ref.awareness();
+                let guard = awareness.read().unwrap();
+                let txn = guard.doc.transact();
+                let Some(filemeta) = txn.get_map("filemeta_v0") else {
+                    continue;
+                };
+
+                for (path, value) in filemeta.iter(&txn) {
+                    if let Some(uuid) =
+                        link_indexer::extract_id_from_filemeta_entry(&value, &txn)
+                    {
+                        // Extract title: strip leading "/" and trailing ".md", take basename
+                        let title = path
+                            .strip_prefix('/')
+                            .unwrap_or(&path)
+                            .strip_suffix(".md")
+                            .unwrap_or(&path)
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&path)
+                            .to_string();
+                        uuid_metadata.insert(uuid, (title, folder_name.clone()));
+                    }
+                }
+            }
+
+            tracing::info!(
+                "Found {} documents in {} folder doc(s) for search indexing",
+                uuid_metadata.len(),
+                folder_doc_ids.len()
+            );
+
+            // For each UUID in the metadata map, find the content doc and index it
+            for (uuid, (title, folder_name)) in &uuid_metadata {
+                // Try to find the content doc — it might be under any relay_id prefix
+                // Search through all loaded docs for one ending with this UUID
+                let mut body = String::new();
+                for entry in self.docs.iter() {
+                    if let Some((_relay_id, doc_uuid)) =
+                        link_indexer::parse_doc_id(entry.key())
+                    {
+                        if doc_uuid == uuid {
+                            let awareness = entry.value().awareness();
+                            let guard = awareness.read().unwrap();
+                            let txn = guard.doc.transact();
+                            if let Some(text) = txn.get_text("contents") {
+                                body = text.get_string(&txn);
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                match search_index.add_document(uuid, title, &body, folder_name) {
+                    Ok(()) => indexed += 1,
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to index doc {} into search: {:?}",
+                            uuid,
+                            e
+                        );
+                    }
+                }
+            }
+
+            tracing::info!("Search index built: {} documents indexed", indexed);
+        }
+
+        // Mark search as ready after indexing is complete
+        self.search_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        tracing::info!("Search index is now ready for queries");
 
         Ok(())
     }
@@ -708,7 +1168,14 @@ impl Server {
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
             )
-            .route("/webhook/reload", post(reload_webhook_config_endpoint));
+            .route("/webhook/reload", post(reload_webhook_config_endpoint))
+            .route("/search", get(handle_search))
+            .route(
+                "/mcp",
+                post(crate::mcp::transport::handle_mcp_post)
+                    .get(crate::mcp::transport::handle_mcp_get)
+                    .delete(crate::mcp::transport::handle_mcp_delete),
+            );
 
         // Only add file endpoints if a store is configured
         if let Some(store) = &self.store {
@@ -1291,6 +1758,53 @@ async fn check_store_deprecated(
 /// Always returns a 200 OK response, as long as we are listening.
 async fn ready() -> Result<Json<Value>, AppError> {
     Ok(Json(json!({"ok": true})))
+}
+
+async fn handle_search(
+    State(server_state): State<Arc<Server>>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<Value>, AppError> {
+    // Check if search is ready (503 during initial indexing)
+    if !server_state
+        .search_ready
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(AppError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            anyhow!("Search index is being built, please try again shortly"),
+        ));
+    }
+
+    let limit = params.limit.min(100); // Cap at 100
+    let q = params.q.trim().to_string();
+
+    if q.is_empty() {
+        return Ok(Json(json!({
+            "results": [],
+            "total_hits": 0,
+            "query": ""
+        })));
+    }
+
+    let search_index = server_state.search_index.clone().ok_or_else(|| {
+        AppError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            anyhow!("Search index not available"),
+        )
+    })?;
+
+    // Run search in blocking context (tantivy is sync)
+    let results = tokio::task::spawn_blocking(move || search_index.search(&q, limit))
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let total_hits = results.len();
+    Ok(Json(json!({
+        "results": results,
+        "total_hits": total_hits,
+        "query": params.q
+    })))
 }
 
 async fn new_doc(

@@ -6,45 +6,68 @@ export interface ClientToken {
   authorization: 'full' | 'read-only';
 }
 
-// Server token from existing relay-git-sync setup
-const SERVER_TOKEN = '2D3RhEOhAQSgWEGkAWxyZWxheS1zZXJ2ZXIDeB1odHRwczovL3JlbGF5LmxlbnNhY2FkZW15Lm9yZwYaaWdOJToAATlIZnNlcnZlckhUsS3xaA3zBw';
-const RELAY_URL = 'https://relay.lensacademy.org';
+/**
+ * Module-level share token — set once at app startup, used by all relay calls.
+ * This ensures no relay connection can be made without a validated share token.
+ */
+let _shareToken: string | null = null;
 
-// Local relay server doesn't need auth
-const USE_LOCAL_RELAY = import.meta.env.VITE_LOCAL_RELAY === 'true';
+/** Store the share token for all subsequent relay auth calls. */
+export function setShareToken(token: string): void {
+  _shareToken = token;
+}
 
-// In development, use Vite proxy to avoid CORS
-const AUTH_BASE = import.meta.env.DEV ? '/api/relay' : RELAY_URL;
+/**
+ * Rewrite relay URLs to use the Vite WebSocket proxy in development.
+ * The relay returns ws://localhost:PORT/... URLs which the browser can't reach
+ * when accessing via SSH tunnel (dev.vps). Route through /ws/relay proxy instead.
+ */
+function rewriteRelayUrl(url: string): string {
+  if (!import.meta.env.DEV) return url;
+  try {
+    const parsed = new URL(url);
+    // Rewrite ws://host:port/path → ws://currentHost:currentPort/ws/relay/path
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/relay${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
 
+/** Rewrite HTTP base URLs similarly */
+function rewriteRelayBaseUrl(url: string): string {
+  if (!import.meta.env.DEV) return url;
+  try {
+    const parsed = new URL(url);
+    return `${window.location.protocol}//${window.location.host}/ws/relay${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Get a client token for connecting to a relay document.
+ * All access goes through server-side share token validation.
+ */
 export async function getClientToken(docId: string): Promise<ClientToken> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  // Only add auth header for production Relay (local relay has no auth)
-  if (!USE_LOCAL_RELAY) {
-    headers['Authorization'] = `Bearer ${SERVER_TOKEN}`;
+  if (!_shareToken) {
+    throw new Error('No share token — access denied');
   }
 
-  const response = await fetch(`${AUTH_BASE}/doc/${docId}/auth`, {
+  const response = await fetch('/api/auth/token', {
     method: 'POST',
-    headers,
-    body: JSON.stringify({
-      authorization: 'full',
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: _shareToken, docId }),
   });
 
   if (!response.ok) {
-    throw new Error(`Auth failed: ${response.status} ${response.statusText}`);
+    const text = await response.text().catch(() => '');
+    throw new Error(`Share token auth failed: ${response.status} ${text}`);
   }
 
   const data = await response.json();
-
-  return {
-    url: data.url,
-    baseUrl: data.baseUrl || (USE_LOCAL_RELAY ? `http://localhost:8090` : RELAY_URL),
-    docId: data.docId,
-    token: data.token,
-    authorization: 'full',
-  };
+  const token = data.clientToken as ClientToken;
+  token.url = rewriteRelayUrl(token.url);
+  token.baseUrl = rewriteRelayBaseUrl(token.baseUrl);
+  return token;
 }

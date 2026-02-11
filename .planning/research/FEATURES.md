@@ -1,188 +1,215 @@
-# Feature Landscape: Embedded Discord Chat Panel
+# Feature Research
 
-**Domain:** Embedded Discord chat widget in a collaborative web editor
+**Domain:** MCP server for collaborative document knowledge base + keyword search index
 **Researched:** 2026-02-08
-**Overall confidence:** MEDIUM (synthesized from multiple sources; some items verified via official docs, others from community patterns)
+**Confidence:** MEDIUM (MCP ecosystem verified with official sources and multiple implementations; search feature expectations based on ecosystem survey)
 
-## Context
+## Feature Landscape
 
-This research covers what features users expect from an in-app Discord chat experience embedded alongside a markdown editor. The comparison set includes:
+### Table Stakes (Users Expect These)
 
-- **WidgetBot** -- the dominant third-party Discord embed widget (20K+ servers, 12M+ users)
-- **Titan Embeds** -- self-hostable open-source Discord embed (Python/Flask, PostgreSQL)
-- **Discord's official widget** -- read-only member/channel list, no messaging
-- **Custom bot+webhook architectures** -- the approach this project uses
+Features users assume exist. Missing these = the MCP server feels useless, or the search feels broken.
 
-Our project is *not* a general-purpose Discord embed. It is a purpose-built chat panel for a specific use case: discussion about the document being edited. This distinction drives what is table stakes vs. overkill.
+#### MCP Server Table Stakes
 
----
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| **List documents** | Every Obsidian/filesystem MCP server has this. AI needs to know what exists before it can work with anything. | LOW | Map folder doc `filemeta_v0` + `docs` maps to a list of document names/paths. Already have this data in folder Y.Docs. |
+| **Read document content** | Core purpose of a knowledge-base MCP. AI cannot help with documents it cannot read. Every MCP server for notes/files exposes this. | LOW | Sync Y.Doc, extract `contents` Y.Text as markdown string. Must handle the yjs binary format. |
+| **Search documents** | AI assistants need to find relevant documents without knowing exact names. Both Obsidian MCP servers and the Notion MCP expose search. This is the whole point of building the search index. | MEDIUM | Keyword search against the index. Returns document names + matching snippets. |
+| **Read backlinks** | We already have backlink data in `backlinks_v0`. Exposing existing data is table stakes for a knowledge graph MCP. GraphThulhu exposes `get_links` for forward+backward links. | LOW | Read `backlinks_v0` Y.Map from folder doc. Translate UUIDs to document names via `filemeta_v0`. |
+| **Read forward links** | Complement to backlinks. AI needs to traverse the link graph in both directions. GraphThulhu and Obsidian MCP servers expose this. | LOW | Already extracted during indexing. Stored per-document in the link indexer. |
+| **List folders** | Users have two shared folders (Lens, Lens Edu). AI needs to know which folders exist and scope operations to them. | LOW | Enumerate loaded folder docs. Return folder names with document counts. |
 
-## Table Stakes
+#### Search Table Stakes
 
-Features users expect. Missing = product feels incomplete or broken.
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| **Full-text keyword search** | Users and AI both expect to find documents by content words. This is the minimum viable search. | MEDIUM | TF-IDF or BM25 over extracted document text. Needs indexing pipeline from Y.Doc content. |
+| **Search result snippets** | Showing matching context is essential. Just document names is not enough -- user/AI needs to see WHY the result matched. | LOW | Extract surrounding text around match positions. Standard in all search implementations. |
+| **Search result ranking** | Results must be ordered by relevance, not arbitrary order. BM25 or TF-IDF provides this naturally. | LOW | Built into any standard full-text search library (tantivy, lunr, etc.). |
+| **Search API endpoint** | Both lens-editor and MCP server consume the same search index. Needs HTTP API. | MEDIUM | REST endpoint on relay server or sidecar. Returns JSON results. |
+| **Search UI in lens-editor** | Users expect to search from the web editor, not just via AI. | MEDIUM | Search input + results panel in React. Calls search API. |
 
-| # | Feature | Why Expected | Complexity | Dependencies | Notes |
-|---|---------|-------------|------------|--------------|-------|
-| T1 | **Live message stream** | Users expect to see new messages appear in real time without refreshing. WidgetBot, Titan, and every chat widget does this. | Med | Bot WebSocket connection to Discord Gateway (MESSAGE_CREATE intent) | Requires MessageContent privileged intent. Messages arrive via Gateway, must be forwarded to browser clients. |
-| T2 | **Message history on load** | Opening the panel should show recent messages, not a blank screen. Every chat widget loads history. | Low | Discord REST API (GET /channels/{id}/messages) | Fetch last 25-50 messages on panel open. Paginate on scroll-up if needed later. |
-| T3 | **Post messages via webhook** | Users must be able to participate, not just lurk. WidgetBot does this with webhooks for guest users. | Low | Discord webhook URL per channel | Webhook allows custom username/avatar per message. Rate limit: ~5 req / 2 sec per webhook. |
-| T4 | **Self-reported display name** | Users need an identity in chat. WidgetBot shows guest names; Titan supports guest usernames. Our "(unverified)" tag is a good honest approach. | Low | Local storage for name persistence, webhook `username` field | Persist chosen name in localStorage. Append "(unverified)" server-side or in the webhook username to prevent spoofing. |
-| T5 | **Basic markdown rendering** | Discord messages use markdown. Showing raw `**bold**` text is unacceptable. WidgetBot renders full Discord markdown. | Med | discord-markdown-parser or similar npm library | Discord markdown differs from standard markdown (e.g., `~~strikethrough~~`, `||spoilers||`, `> quotes`). Use a Discord-specific parser. |
-| T6 | **Timestamps on messages** | Every chat interface shows when messages were sent. Absence feels broken. | Low | Message `timestamp` field from Discord API | Relative timestamps ("2m ago") for recent, absolute for older. |
-| T7 | **Author identification** | Users need to know who said what. Show username and avatar for Discord users; show name + "(unverified)" for webhook guests. | Low | Message `author` object from Discord API | Webhook messages have `author.bot: true` and `webhook_id` set. Distinguish visually. |
-| T8 | **Scroll behavior** | Auto-scroll to newest messages; stop auto-scrolling if user scrolls up to read history. Standard chat UX. | Low | Frontend scroll logic | "New messages" indicator when scrolled up. Click to jump to bottom. |
-| T9 | **Loading / error states** | Show spinner while loading history, error message if connection fails. Without these, users think the panel is broken. | Low | None | Include retry button on connection failure. |
-| T10 | **Panel toggle / resize** | Users must be able to show/hide the chat panel. Editor space is primary. WidgetBot's "Crate" is a toggleable popup; their full widget is inline. | Low | UI layout state | Side panel with drag-to-resize or fixed width with toggle button. Remember open/closed state. |
+### Differentiators (Competitive Advantage)
 
----
+Features that set this MCP server apart from generic filesystem access. Not required, but make AI assistants significantly more effective with the knowledge base.
 
-## Differentiators
+| Feature | Value Proposition | Complexity | Notes |
+|---------|-------------------|------------|-------|
+| **Graph traversal (N degrees)** | AI can discover related documents by walking the link graph multiple hops deep, not just direct links. Very few MCP servers offer this -- GraphThulhu does BFS traversal, but most don't. | MEDIUM | BFS/DFS from a starting document through backlinks_v0 and forward links. Return document names at each depth. Cap at configurable max depth. |
+| **Edit via CriticMarkup** | AI can suggest edits without destructive writes. No other MCP server does this -- they either allow full writes (dangerous) or are read-only (useless for editing). CriticMarkup suggestions are reviewable by humans. | MEDIUM | Insert CriticMarkup syntax (`{++add++}`, `{--delete--}`, `{~~old~>new~~}`) into Y.Doc content. Requires yjs write access. Unique differentiator. |
+| **Document context bundle** | Single tool call returns document content + its backlinks + its forward links + frontmatter. AI gets full context in one request instead of 3-4 separate calls. Token-efficient. | LOW | Combine read_document + get_backlinks + get_forward_links into one response. Reduces round-trips. |
+| **Cross-folder link awareness** | AI can discover connections between Lens and Lens Edu folders. The system already tracks cross-folder backlinks. | LOW | Leverage existing cross-folder backlink indexing. Surface in graph traversal results. |
+| **Search with link context** | Search results include backlink/forward link counts. AI can prioritize well-connected documents (likely more important). | LOW | Augment search results with link counts from backlinks_v0. |
+| **MCP Resources for documents** | Expose documents as MCP Resources (not just tools). Clients can subscribe to document changes and get real-time updates. More aligned with MCP spec for data that the application manages. | MEDIUM | Requires MCP Resource protocol implementation with `resources/list`, `resources/read`, and optionally `resources/subscribe`. Complementary to tools. |
+| **MCP Prompts for common workflows** | Pre-built prompt templates like "summarize this document", "find related documents", "review recent changes". Makes the MCP server immediately useful without AI needing to figure out tool composition. | LOW | Define 3-5 prompt templates that combine tool calls into useful workflows. Pure MCP spec feature. |
 
-Features that set the product apart. Not universally expected, but create meaningful value in this specific context.
+### Anti-Features (Commonly Requested, Often Problematic)
 
-| # | Feature | Value Proposition | Complexity | Dependencies | Notes |
-|---|---------|-------------------|------------|--------------|-------|
-| D1 | **Document-aware channel mapping** | The killer feature: chat automatically shows the Discord channel for the document being edited. No other embed widget is context-aware. | Med | Mapping from document ID/path to Discord channel ID. Configuration or convention-based. | This is the core reason to build custom rather than use WidgetBot. |
-| D2 | **Unobtrusive integration** | Chat panel sits alongside editor without stealing focus or space. Unlike WidgetBot's popup crate, this is architecturally part of the app. | Low | React component layout | Side panel, bottom panel, or collapsible drawer. Should not overlay editor content. |
-| D3 | **Webhook identity with "(unverified)" tag** | Transparent trust model. Users know who is verified (Discord account) vs. who self-reported their name. No other embed does this clearly. | Low | T4 (display name) | Builds trust without requiring Discord login. WidgetBot's guest mode is less explicit about verification status. |
-| D4 | **Message notifications (unread count)** | Badge on collapsed panel showing unread message count. WidgetBot's Crate does this. | Med | T1 (live stream), T10 (panel toggle) | Count messages received while panel is closed. Reset on open. |
-| D5 | **Inline code block rendering** | Discord messages with code blocks render with syntax highlighting. Relevant for a developer/editor audience. | Med | T5 (markdown rendering), highlight.js or similar | discord-markdown supports highlight.js class output. Match editor's syntax highlighting theme. |
-| D6 | **User mention rendering** | Render `<@123456789>` as `@Username` with styling. WidgetBot does this; raw mention IDs are ugly. | Med | Discord REST API to resolve user IDs, or cache from message authors | Can start with just styling the raw format, resolve names lazily. |
-| D7 | **Emoji rendering** | Render Unicode emoji natively and custom Discord emoji as images. Messages with emoji are common. | Med | T5 (markdown rendering) | Unicode emoji: native browser rendering. Custom emoji: `<:name:id>` format, fetch from Discord CDN. Start with Unicode only. |
-| D8 | **Message edit/delete reflection** | When someone edits or deletes a message on Discord, the panel updates. WidgetBot v3.8 added this. | Med | Bot Gateway events: MESSAGE_UPDATE, MESSAGE_DELETE | Important for accuracy. Without this, deleted messages persist in the panel and edited messages show stale content. |
-| D9 | **Keyboard shortcut to toggle panel** | Quick access without mouse. Power user feature for an editor tool. | Low | T10 (panel toggle) | e.g., Ctrl+Shift+D. Must not conflict with editor shortcuts. |
-| D10 | **Connection status indicator** | Show whether the Discord connection is live, reconnecting, or disconnected. | Low | T1 (live stream) | Small colored dot or text. Builds confidence that messages are current. |
-| D11 | **Link previews / embed rendering** | Discord embeds (link previews, bot embeds) rendered inline. WidgetBot renders these. | High | T5 (markdown rendering) | Significant rendering complexity. Many embed fields: title, description, color, image, thumbnail, fields, footer, author. Defer to post-MVP. |
-| D12 | **Attachment display** | Show images and file attachments inline. WidgetBot supports file uploading and display. | High | Image rendering, file type detection | Images: render inline with lightbox. Files: show filename + download link. Defer images to post-MVP; show download links early. |
+Features that seem good but create problems in this specific context.
 
----
-
-## Anti-Features
-
-Features to explicitly NOT build. Common mistakes or scope traps.
-
-| # | Anti-Feature | Why Avoid | What to Do Instead |
-|---|--------------|-----------|-------------------|
-| A1 | **Full Discord client reproduction** | Titan Embeds explicitly warns: "This project is never to be used as a replacement for Discord app." Attempting channel lists, DMs, server switching, roles, etc. creates an impossible maintenance burden. Discord's rendering alone involves AST parsing, entity resolution, and cross-platform consistency. | Build a single-channel chat panel. Users who need full Discord functionality open Discord. |
-| A2 | **Discord OAuth login** | Adding OAuth creates significant complexity (token management, refresh flows, permission scoping) and requires Discord app approval for larger scale. WidgetBot and Titan both support it, but for our use case (quick participation in document discussion), it is friction that reduces adoption. | Use self-reported names + webhook. Verified Discord users appear naturally when they post from Discord proper. |
-| A3 | **Channel switching** | Tempting because WidgetBot supports it, but our value proposition is *automatic* channel selection based on document context. Manual channel switching breaks the mental model. | One document = one channel. Channel is derived from document, not chosen by user. |
-| A4 | **Message sending from authenticated Discord accounts** | Requires OAuth + bot token management + user token proxying. Massive security surface. Discord ToS concerns with user token usage. | Webhook posting is the right abstraction. Webhook messages appear in Discord as bot messages with custom names -- this is the designed use case. |
-| A5 | **Reactions / threading** | Discord reactions and threads are complex subsystems. Reactions require emoji picker UI, reaction state management, and per-user tracking. Threads require nested message views. | Display reactions as read-only counts if present on messages. Do not allow adding reactions from the panel. Ignore threads initially. |
-| A6 | **File upload from panel** | Requires multipart form handling, file size limits, CDN URL generation, content type validation. Large attack surface for abuse. | Show download links for attachments posted from Discord. Do not allow uploads from the web panel. |
-| A7 | **Message editing/deleting from panel** | Webhook messages cannot be edited/deleted by the sender through normal Discord mechanics (only by the webhook itself). Implementing this requires storing webhook message IDs and building edit/delete endpoints. Edge cases with rate limits and permission. | Messages sent from the panel are fire-and-forget. Users can clarify with follow-up messages. |
-| A8 | **Typing indicators** | Requires real-time presence tracking, Gateway TYPING_START events, UI for "X is typing..." animation. Marginal value for a side panel. | Omit entirely. Messages appear fast enough via live stream. |
-| A9 | **Member list / online status** | WidgetBot shows member lists. For a document discussion panel, this is noise. The focus is the conversation, not who is online. | Do not show member lists. If needed later, show a simple count ("3 online"). |
-| A10 | **Custom CSS theming engine** | Both WidgetBot and Titan offer extensive CSS customization. Building a theming engine is a distraction. | Match the editor's existing design system. One theme that fits the app. Support dark/light mode via the editor's existing mode. |
-| A11 | **Notification sounds** | Browser notification sounds are annoying and require audio permission UX. Users will mute immediately. | Visual-only notifications (unread count badge). No audio. |
-
----
+| Feature | Why Requested | Why Problematic | Alternative |
+|---------|---------------|-----------------|-------------|
+| **Direct document writes (no CriticMarkup)** | "AI should just edit the document directly." | No AuthZ system yet. Unreviewed AI writes to a shared knowledge base are dangerous. Multiple humans collaborate on these docs via Obsidian. A rogue AI edit could corrupt content that others are actively editing. | CriticMarkup suggestions only. Humans review and accept/reject. This is a feature, not a limitation. |
+| **Semantic/vector search** | "Keyword search is old-fashioned, use embeddings." | Adds significant infrastructure (embedding model, vector DB or FAISS index, GPU/API costs). Keyword search covers 80% of use cases for a knowledge base. Vector search is explicitly out of scope for this milestone. | Keyword search now. Design search API to be extensible so vector search can be added later without breaking consumers. |
+| **Real-time document subscriptions via MCP** | "AI should know when a document changes." | MCP transport is typically stdio (Claude Code) or SSE (Claude Desktop). Real-time subscriptions create long-lived connections that most MCP clients don't handle well. The November 2025 spec adds async Tasks but client support is nascent. | Polling via search/read tools. The AI doesn't need real-time -- it can re-read when needed. Consider MCP Resource subscriptions later when client support matures. |
+| **Document creation via MCP** | "AI should create new documents." | Creating documents requires writing to both `filemeta_v0` AND `docs` maps in the folder doc (Obsidian compatibility). Getting this wrong causes Obsidian to delete the document. Also, creating documents without human intent is more dangerous than editing existing ones. | Defer to post-AuthZ milestone. When permission system exists, allow document creation for authorized AI agents. |
+| **Bulk operations (edit all, search-and-replace across docs)** | "AI should be able to refactor across the whole knowledge base." | Extremely dangerous without AuthZ. A single bad prompt could insert CriticMarkup suggestions into every document. Also creates massive yjs transactions that could overwhelm the relay server. | Single-document operations only. AI can iterate over search results one at a time. Rate limiting on edit operations. |
+| **File attachment access** | "AI should be able to read images and PDFs attached to documents." | Attachments are binary files stored in R2. Most AI assistants can't do anything useful with raw binary data. Images would need OCR, PDFs need extraction. Adds complexity without clear value for the initial release. | Text content only. Document the limitation. Consider adding attachment listing (names only) as a future enhancement. |
+| **Admin/management tools** | "AI should manage folders, configure settings, manage users." | MCP is for document access, not system administration. Admin operations should require human action through a dedicated interface. | No admin tools in MCP. Keep MCP focused on document content operations. |
 
 ## Feature Dependencies
 
 ```
-T1 (Live message stream)
- ├── T8 (Scroll behavior) -- needs message flow to scroll
- ├── D4 (Unread count) -- counts messages from live stream
- ├── D8 (Edit/delete reflection) -- additional Gateway events
- └── D10 (Connection status) -- monitors stream health
+[Search Index]
+    |
+    |--> requires --> [Y.Doc Content Extraction Pipeline]
+    |                      |
+    |                      +--> requires --> [Relay Server Document Access]
+    |
+    +--> enables --> [MCP: search_documents tool]
+    +--> enables --> [Search UI in lens-editor]
 
-T2 (Message history)
- └── T8 (Scroll behavior) -- initial scroll position
+[MCP: list_documents]
+    +--> requires --> [Relay Server Document Access]
+    +--> requires --> [Folder Doc Metadata Reading]
 
-T3 (Post via webhook)
- └── T4 (Display name) -- username field for webhook
+[MCP: read_document]
+    +--> requires --> [Relay Server Document Access]
+    +--> requires --> [Y.Doc Content Extraction]
 
-T5 (Markdown rendering)
- ├── D5 (Code blocks) -- extends markdown parser
- ├── D6 (Mention rendering) -- extends markdown parser
- ├── D7 (Emoji rendering) -- extends markdown parser
- └── D11 (Embed rendering) -- separate but related rendering
+[MCP: edit_document (CriticMarkup)]
+    +--> requires --> [MCP: read_document] (must read before editing)
+    +--> requires --> [Y.Doc Write Access]
+    +--> requires --> [CriticMarkup Generation Logic]
 
-T10 (Panel toggle)
- ├── D4 (Unread count) -- shown on collapsed panel
- └── D9 (Keyboard shortcut) -- triggers toggle
+[MCP: get_backlinks / get_forward_links]
+    +--> requires --> [Backlinks Indexer] (already built)
+    +--> requires --> [UUID-to-Name Resolution] (from filemeta_v0)
 
-D1 (Document-aware channel mapping)
- └── T1, T2, T3 all depend on knowing which channel to connect to
+[MCP: traverse_links (N degrees)]
+    +--> requires --> [MCP: get_backlinks]
+    +--> requires --> [MCP: get_forward_links]
+    +--> enhances --> [MCP: search_documents] (search + traverse = powerful discovery)
+
+[MCP: get_document_context (bundle)]
+    +--> requires --> [MCP: read_document]
+    +--> requires --> [MCP: get_backlinks]
+    +--> requires --> [MCP: get_forward_links]
+
+[Search UI in lens-editor]
+    +--> requires --> [Search API endpoint]
+    +--> independent of --> [MCP server] (shared search index, independent consumers)
 ```
 
-**Critical path:** D1 (channel mapping) -> T1 (live stream) + T2 (history) -> T5 (rendering) -> T3 (posting)
+### Dependency Notes
 
----
+- **Search Index requires Y.Doc Content Extraction:** Before you can index documents, you need a reliable way to extract markdown text from Y.Docs. This pipeline is shared between search indexing and MCP document reading.
+- **MCP edit requires MCP read:** The AI must read a document before it can generate meaningful CriticMarkup suggestions. The edit tool should require (or at least strongly recommend) reading first.
+- **Graph traversal requires backlinks + forward links:** Both must work before multi-hop traversal is possible. Backlinks already exist; forward links need to be exposed.
+- **Search UI and MCP are independent consumers:** Both consume the same search API. Neither depends on the other. Can be built in parallel.
 
-## MVP Recommendation
+## MVP Definition
 
-For MVP, prioritize these features in order:
+### Launch With (v1)
 
-### Must Have (launch blockers)
+Minimum viable product -- what's needed to validate that AI assistants can usefully work with relay documents.
 
-1. **D1 -- Document-aware channel mapping** (the entire value proposition)
-2. **T2 -- Message history on load** (users see existing conversation)
-3. **T1 -- Live message stream** (new messages appear in real time)
-4. **T7 -- Author identification** (who said what)
-5. **T6 -- Timestamps** (when was it said)
-6. **T5 -- Basic markdown rendering** (bold, italic, code, quotes -- no custom emoji yet)
-7. **T3 -- Post via webhook** (participate in conversation)
-8. **T4 -- Display name** (identity for posting)
-9. **T8 -- Scroll behavior** (usable chat UX)
-10. **T9 -- Loading/error states** (reliability perception)
-11. **T10 -- Panel toggle** (show/hide the panel)
+- [ ] **list_documents** -- AI needs to know what exists
+- [ ] **read_document** -- AI needs to read content
+- [ ] **search_documents** -- AI needs to find relevant documents (keyword search)
+- [ ] **get_backlinks** -- AI can discover related documents via existing link graph
+- [ ] **get_forward_links** -- Complement to backlinks for bidirectional traversal
+- [ ] **Search index** -- Backend service that indexes Y.Doc content for keyword search
+- [ ] **Search API** -- HTTP endpoint consumed by both MCP and lens-editor
+- [ ] **Search UI** -- Basic search input + results in lens-editor
 
-### Should Have (soon after launch)
+### Add After Validation (v1.x)
 
-- **D3 -- "(unverified)" tag** (trust clarity)
-- **D10 -- Connection status** (confidence indicator)
-- **D4 -- Unread count** (engagement driver)
-- **D7 -- Emoji rendering** (Unicode first, custom later)
-- **D8 -- Edit/delete reflection** (accuracy)
+Features to add once core is working and AI assistants are successfully using the MCP server.
 
-### Defer to Post-MVP
+- [ ] **edit_document (CriticMarkup)** -- Add when read-only access proves useful and users want AI to suggest edits. Requires careful testing of yjs write operations.
+- [ ] **traverse_links (N degrees)** -- Add when users find single-hop backlinks limiting. Needs BFS implementation and depth limiting.
+- [ ] **get_document_context (bundle)** -- Add when round-trip costs prove painful. Optimization, not required for v1.
+- [ ] **MCP Prompts** -- Add when usage patterns emerge. Pre-built workflows for common tasks.
 
-- **D5 -- Syntax-highlighted code blocks**: Complexity of highlight.js integration. Plain code blocks (monospace, no highlighting) suffice initially.
-- **D6 -- User mention resolution**: Showing raw `<@id>` is acceptable short-term; resolving to names requires API calls and caching.
-- **D9 -- Keyboard shortcut**: Nice but not blocking.
-- **D11 -- Rich embed rendering**: High complexity. Show embeds as simple linked text or omit.
-- **D12 -- Attachment display**: Show as download links initially. Inline image rendering is post-MVP.
+### Future Consideration (v2+)
 
----
+Features to defer until product-market fit is established.
 
-## Complexity Budget
+- [ ] **MCP Resources** -- Defer until MCP client support for Resources matures. Currently most clients (Claude Code, Claude Desktop) handle Tools better than Resources.
+- [ ] **Semantic/vector search** -- Defer to dedicated milestone. Requires embedding infrastructure.
+- [ ] **Document creation** -- Defer until AuthZ exists. Too dangerous without permissions.
+- [ ] **Cross-folder search scoping** -- Defer unless users specifically request searching only Lens or only Lens Edu.
+- [ ] **Real-time notifications** -- Defer until MCP async Tasks are widely supported.
 
-| Complexity | Count | Features |
-|------------|-------|----------|
-| Low | 10 | T3, T4, T6, T7, T8, T9, T10, D2, D3, D9, D10 |
-| Medium | 8 | T1, T2, T5, D1, D4, D5, D6, D7, D8 |
-| High | 2 | D11, D12 |
+## Feature Prioritization Matrix
 
-The MVP is predominantly Low and Medium complexity items, which is appropriate for a first milestone.
+| Feature | User Value | Implementation Cost | Priority |
+|---------|------------|---------------------|----------|
+| list_documents | HIGH | LOW | P1 |
+| read_document | HIGH | LOW | P1 |
+| search_documents (keyword) | HIGH | MEDIUM | P1 |
+| get_backlinks | HIGH | LOW | P1 |
+| get_forward_links | MEDIUM | LOW | P1 |
+| Search index service | HIGH | MEDIUM | P1 |
+| Search API endpoint | HIGH | MEDIUM | P1 |
+| Search UI in lens-editor | MEDIUM | MEDIUM | P1 |
+| edit_document (CriticMarkup) | HIGH | MEDIUM | P2 |
+| traverse_links (N degrees) | MEDIUM | MEDIUM | P2 |
+| get_document_context (bundle) | MEDIUM | LOW | P2 |
+| MCP Prompts | LOW | LOW | P2 |
+| MCP Resources | LOW | MEDIUM | P3 |
+| Semantic search | MEDIUM | HIGH | P3 |
+| Document creation | LOW | MEDIUM | P3 |
 
----
+**Priority key:**
+- P1: Must have for launch
+- P2: Should have, add when possible
+- P3: Nice to have, future consideration
 
-## Key Technical Constraints (from research)
+## Competitor Feature Analysis
 
-1. **Webhook rate limit:** ~5 requests per 2 seconds per webhook. Sufficient for normal chat but could be hit during rapid-fire conversations. Consider client-side debouncing or queueing.
-2. **MessageContent privileged intent:** Required for the bot to receive message content via Gateway. Must be enabled in Discord Developer Portal. For bots in <100 servers, no approval needed.
-3. **Discord markdown is not standard markdown:** Different parsing rules for spoilers (`||text||`), strikethrough (`~~text~~`), mentions (`<@id>`), channels (`<#id>`), emoji (`<:name:id>`), timestamps (`<t:unix:format>`). Use a Discord-specific parser like `discord-markdown-parser`.
-4. **Message content limit:** 2000 characters for messages sent via webhook. Enforce client-side.
-5. **Webhook messages are "bot" messages:** They show the BOT tag in Discord unless the webhook is specifically configured. The `username` and `avatar_url` fields override per-message.
+| Feature | Filesystem MCP (Anthropic) | Obsidian MCP (cyanheads) | GraphThulhu (Logseq/Obsidian) | Notion MCP (Official) | Our Approach |
+|---------|---------------------------|-------------------------|-------------------------------|----------------------|--------------|
+| List documents | `list_directory`, `directory_tree` | `obsidian_list_notes` (folder filter) | `list_pages` (filter, sort) | `notion-search` | `list_documents` with folder scope |
+| Read content | `read_text_file`, `read_multiple_files` | `obsidian_read_note` (with metadata) | `get_page` (recursive block tree) | `notion-fetch` | `read_document` with markdown content |
+| Search | `search_files` (filename pattern only) | `obsidian_global_search` (text + regex) | N/A (graph-based discovery) | `notion-search` (full-text) | `search_documents` (keyword, BM25 ranking) |
+| Edit content | `write_file`, `edit_file` (destructive) | `obsidian_update_note` (append/prepend/overwrite) | N/A | `notion-update-page` | `edit_document` (CriticMarkup suggestions only) |
+| Backlinks | N/A | N/A | `get_links` (forward + backward) | N/A | `get_backlinks` (from existing backlinks_v0) |
+| Graph traversal | N/A | N/A | `traverse` (BFS between pages) | N/A | `traverse_links` (N-degree BFS) |
+| Metadata | `get_file_info` | `obsidian_manage_frontmatter` | N/A | `notion-update-page` (properties) | Via document content (frontmatter in markdown) |
+| Comments | N/A | N/A | N/A | `notion-create-comment`, `notion-get-comments` | Via CriticMarkup `{>>comment<<}` syntax |
+| Tags | N/A | `obsidian_manage_tags` | `find_by_tag` | N/A | Defer (tags are in frontmatter, readable via content) |
+| Graph analysis | N/A | N/A | `topic_clusters`, `knowledge_gaps`, `find_connections` | N/A | Defer (advanced graph analysis is v2+) |
 
----
+### Competitive Positioning
+
+**Our unique advantages:**
+1. **CriticMarkup editing** -- No other MCP server offers suggestion-based editing. Filesystem MCP does destructive writes. Obsidian MCP does append/prepend/overwrite. We offer reviewable suggestions. This is genuinely novel.
+2. **Built-in link graph** -- Backlinks are already indexed server-side. Most MCP servers for notes (including Obsidian MCP by cyanheads) don't expose graph data. Only GraphThulhu does, and it requires a separate setup.
+3. **Shared search index** -- Same search powers both the web editor and AI assistants. No duplication, consistent results.
+4. **Real-time collaborative context** -- Documents are live Y.Docs. When the AI reads a document, it gets the current collaborative state, not a stale file on disk.
+
+**Our limitations vs. competitors:**
+1. No direct writes (by design -- safety without AuthZ)
+2. No frontmatter management tools (deferred -- readable via content)
+3. No advanced graph analytics (deferred -- not MVP)
+4. Smaller document corpus than Notion workspaces (two shared folders vs. arbitrary workspaces)
 
 ## Sources
 
-### Verified (MEDIUM-HIGH confidence)
-- [Discord Developer Portal -- Webhooks](https://discord.com/developers/docs/resources/webhook) -- Official webhook API documentation
-- [Discord Developer Portal -- Rate Limits](https://discord.com/developers/docs/topics/rate-limits) -- Official rate limit documentation
-- [Discord Developer Portal -- Message Resource](https://discord.com/developers/docs/resources/message) -- Message object structure
-- [Discord Blog -- How Discord Renders Rich Messages](https://discord.com/blog/how-discord-renders-rich-messages-on-the-android-app) -- Rendering architecture
-- [Discord -- Message Content Privileged Intent FAQ](https://support-dev.discord.com/hc/en-us/articles/4404772028055-Message-Content-Privileged-Intent-FAQ) -- Intent requirements
-- [WidgetBot Documentation](https://docs.widgetbot.io/embed/) -- Embed formats, API, features
-- [WidgetBot Crate API](https://docs.widgetbot.io/embed/crate/api) -- Programmatic control
-- [Titan Embeds GitHub](https://github.com/TitanEmbeds/Titan) -- Architecture, features, self-hosting
+- [Obsidian MCP Server (cyanheads)](https://github.com/cyanheads/obsidian-mcp-server) -- 8 tools for vault interaction, HIGH confidence
+- [MCP Filesystem Server (Anthropic)](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem) -- 13 tools for file operations, HIGH confidence
+- [GraphThulhu](https://github.com/skridlevsky/graphthulhu) -- 37 tools for knowledge graph navigation, MEDIUM confidence
+- [Notion MCP Server](https://developers.notion.com/docs/mcp-supported-tools) -- 16 tools for workspace operations, HIGH confidence
+- [MCP Specification 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25) -- Resources vs Tools distinction, HIGH confidence
+- [KB MCP Server (Geeksfino)](https://github.com/Geeksfino/kb-mcp-server) -- Semantic search with hybrid scoring, MEDIUM confidence
+- [mcp-obsidian (bitbonsai)](https://github.com/bitbonsai/mcp-obsidian) -- 11 tools for safe vault access, MEDIUM confidence
+- [Best MCP Servers for Knowledge Bases 2026](https://desktopcommander.app/blog/2026/02/06/best-mcp-servers-for-knowledge-bases-in-2026/) -- Ecosystem overview, LOW confidence
+- [MCP Best Practices 2026](https://www.cdata.com/blog/mcp-server-best-practices-2026) -- Production patterns, LOW confidence
 
-### Community / Synthesized (LOW-MEDIUM confidence)
-- [Discord Webhooks Guide](https://birdie0.github.io/discord-webhooks-guide/discord_webhook.html) -- Community webhook documentation
-- [Discord Webhooks Rate Limits](https://birdie0.github.io/discord-webhooks-guide/other/rate_limits.html) -- Rate limit specifics (community-verified)
-- [discord-markdown-parser npm](https://www.npmjs.com/package/discord-markdown-parser) -- Parsing library based on simple-markdown
-- [RPG Directory -- WidgetBot vs Titan comparison](https://rpg-directory.com/index.php?showtopic=95981) -- User experience comparison
-- [Chat Widget Accessibility Best Practices](https://www.craigabbott.co.uk/blog/web-chat-accessibility-considerations/) -- A11y considerations
+---
+*Feature research for: MCP server + keyword search for CRDT document system*
+*Researched: 2026-02-08*
