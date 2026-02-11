@@ -132,6 +132,10 @@ Two shared folders are synced to GitHub:
 
 See [docs/server-ops.md](docs/server-ops.md) for git connector config, SSH key setup, and operational details.
 
+**NEVER push directly to [Lens-Academy/lens-edu-relay](https://github.com/Lens-Academy/lens-edu-relay)** (not via `git push`, `gh api`, or any other method). The `relay-git-sync` container continuously pushes to the `staging` branch of that repo. Any external push will cause divergence, breaking relay-git-sync until manually fixed on the production server.
+
+Edu content CI workflow files live in that repo (`.github/workflows/validate.yml`). To modify them, ask the user for instructions on cloning the repo on the Hetzner relay production server (46.224.127.155) and pushing from there, so relay-git-sync stays in sync.
+
 ## Known Issues
 
 - **WebSocket FD leak** in relay-server (sockets accumulate in CLOSE-WAIT). Workaround: `--ulimit nofile=65536:524288` extends time-to-restart to ~39 days.
