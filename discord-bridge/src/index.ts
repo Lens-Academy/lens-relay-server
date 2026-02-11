@@ -6,8 +6,7 @@ import { streamSSE } from 'hono/streaming';
 import {
   fetchChannelMessages,
   fetchChannelInfo,
-  executeWebhook,
-  validateWebhookUsername,
+  sendBotMessage,
   RateLimitError,
   DiscordApiError,
 } from './discord-client.js';
@@ -126,7 +125,7 @@ app.get('/api/channels/:channelId', async (c) => {
   }
 });
 
-// POST /api/channels/:channelId/messages — webhook proxy
+// POST /api/channels/:channelId/messages — bot message proxy
 app.post('/api/channels/:channelId/messages', async (c) => {
   const { channelId } = c.req.param();
 
@@ -151,20 +150,12 @@ app.post('/api/channels/:channelId/messages', async (c) => {
     return c.json({ error: 'Message exceeds 2000 character limit' }, 400);
   }
 
-  // Append " (unverified)" suffix server-side (POST-03)
-  const finalUsername = `${body.username.trim()} (unverified)`;
-
-  // Validate the final username (with suffix)
-  const usernameError = validateWebhookUsername(finalUsername);
-  if (usernameError) {
-    return c.json({ error: usernameError }, 400);
-  }
+  // Format message with username prefix (POST-03)
+  const displayName = `${body.username.trim()} (unverified)`;
+  const formattedContent = `**${displayName}:** ${body.content}`;
 
   try {
-    const result = await executeWebhook(channelId, {
-      content: body.content,
-      username: finalUsername,
-    });
+    const result = await sendBotMessage(channelId, formattedContent);
     return c.json(result, 200);
   } catch (err) {
     if (err instanceof RateLimitError) {
@@ -180,10 +171,7 @@ app.post('/api/channels/:channelId/messages', async (c) => {
       );
     }
     const message = err instanceof Error ? err.message : 'Unknown error';
-    if (message.includes('No webhook URL configured')) {
-      return c.json({ error: message }, 503);
-    }
-    console.error('[discord-bridge] Webhook error:', message);
+    console.error('[discord-bridge] Send error:', message);
     return c.json({ error: message }, 500);
   }
 });
@@ -199,15 +187,6 @@ const port = parseInt(
 
 // Start Gateway connection (no-op if DISCORD_BOT_TOKEN is missing)
 startGateway();
-
-if (!process.env.DISCORD_WEBHOOK_URL && !process.env.DISCORD_WEBHOOK_MAP) {
-  console.warn(
-    '[discord-bridge] No webhook URL configured. POST /api/channels/:channelId/messages will return 503.'
-  );
-  console.warn(
-    '[discord-bridge] Set DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_MAP to enable message posting.'
-  );
-}
 
 serve({ fetch: app.fetch, port }, () => {
   console.log(`[discord-bridge] Listening on port ${port}`);

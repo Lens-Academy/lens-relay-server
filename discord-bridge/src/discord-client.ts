@@ -1,4 +1,4 @@
-import type { DiscordMessage, DiscordChannel, WebhookPayload } from './types.js';
+import type { DiscordMessage, DiscordChannel } from './types.js';
 
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
 
@@ -125,75 +125,22 @@ export async function fetchChannelInfo(
   return data;
 }
 
-// --- Webhook execution ---
-
-const WEBHOOK_MAP: Record<string, string> = (() => {
-  const mapStr = process.env.DISCORD_WEBHOOK_MAP;
-  if (mapStr) {
-    try {
-      return JSON.parse(mapStr);
-    } catch {
-      /* fall through */
-    }
-  }
-  return {};
-})();
-
-const DEFAULT_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-
-function getWebhookUrl(channelId: string): string {
-  const url = WEBHOOK_MAP[channelId] || DEFAULT_WEBHOOK_URL;
-  if (!url) {
-    throw new Error(
-      'No webhook URL configured. Set DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_MAP.'
-    );
-  }
-  return url;
-}
+// --- Bot message sending ---
 
 /**
- * Validate a webhook username (before the " (unverified)" suffix is appended).
- * Returns an error message string if invalid, null if valid.
+ * Send a message to a Discord channel using the bot token.
+ * Uses POST /channels/{channelId}/messages with bot auth.
  */
-export function validateWebhookUsername(username: string): string | null {
-  const trimmed = username.trim();
-  if (trimmed.length === 0) {
-    return 'Username is required';
-  }
-  if (trimmed.length > 80) {
-    return 'Username exceeds 80 character limit';
-  }
-  if (trimmed.toLowerCase().includes('clyde')) {
-    return 'Username cannot contain "clyde"';
-  }
-  return null;
-}
-
-/**
- * Execute a Discord webhook to post a message.
- * Uses the webhook URL from DISCORD_WEBHOOK_MAP or DISCORD_WEBHOOK_URL.
- * Does NOT use the bot token — webhooks use their own URL-embedded token.
- */
-export async function executeWebhook(
+export async function sendBotMessage(
   channelId: string,
-  payload: WebhookPayload
-): Promise<{ id: string }> {
-  const webhookUrl = getWebhookUrl(channelId);
-
-  const body: Record<string, string> = {
-    content: payload.content,
-    username: payload.username,
-  };
-  if (payload.avatar_url) {
-    body.avatar_url = payload.avatar_url;
-  }
-
-  // ?wait=true makes Discord return the created message object
-  const res = await fetch(`${webhookUrl}?wait=true`, {
+  content: string
+): Promise<DiscordMessage> {
+  const url = `${DISCORD_API_BASE}/channels/${channelId}/messages`;
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: authHeaders(),
+    body: JSON.stringify({ content }),
   });
 
-  return handleResponse<{ id: string }>(res);
+  return handleResponse<DiscordMessage>(res);
 }
