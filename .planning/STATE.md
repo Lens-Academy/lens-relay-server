@@ -5,21 +5,26 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Users can participate in the Discord discussion about a document without leaving the editor.
-**Current focus:** Phase 2 complete. Ready for Phase 3 (Posting Messages) or Phase 4 (Connection Resilience).
+**Current focus:** Phase 3 in progress (Posting Messages). Plan 02 complete (display name identity system).
 
 ## Position
 
-- **Current phase:** 2 of 4 (Live Streaming) -- COMPLETE
-- **Plan:** 3 of 3 in phase complete
-- **Status:** Phase complete
-- **Last activity:** 2026-02-10 - Completed 02-03-PLAN.md (SSE client, auto-scroll, new messages indicator)
+- **Current phase:** 3 of 4 (Posting Messages)
+- **Plan:** 2 of 3 in phase complete
+- **Status:** In progress
+- **Last activity:** 2026-02-11 - Completed 03-02-PLAN.md (display name identity system)
 
-Progress: `[######...] 6/9 plans (67%)`
+Progress: `[########.] 8/9 plans (89%)`
 
 ## Recent Decisions
 
 | Decision | Made In | Rationale |
 |----------|---------|-----------|
+| Plain div overlay for non-closable modal (not Radix) | 03-02 | Radix Dialog is dismissable by design; plain div gives full control |
+| maxLength 66 for display name input | 03-02 | 80 minus 14 chars for " (unverified)" suffix appended by bridge |
+| Client-side "clyde" rejection | 03-02 | Discord rejects webhook usernames containing "clyde" |
+| DisplayNameProvider outside NavigationContext | 03-02 | App-global identity scope, not navigation-scoped |
+| Global identity bar above main layout | 03-02 | Flex-col restructure to stack identity bar above sidebar+editor |
 | EventSource dedup via state updater function | 02-03 | prev.some() inside setMessages avoids stale closure issues |
 | IntersectionObserver sentinel for scroll detection | 02-03 | 1px sentinel div more reliable than scroll math calculations |
 | Wrapper div pattern for floating indicator | 02-03 | NewMessagesBar outside scroll container prevents it scrolling away |
@@ -40,9 +45,9 @@ Progress: `[######...] 6/9 plans (67%)`
 
 ## Session Continuity
 
-- **Last session:** 2026-02-10
-- **Stopped at:** Completed 02-03-PLAN.md (Phase 2 complete)
-- **Resume file:** None (next phase planning needed)
+- **Last session:** 2026-02-11
+- **Stopped at:** Completed 03-02-PLAN.md (display name identity system)
+- **Resume file:** None
 
 ---
-*Last updated: 2026-02-10 after completing plan 02-03 (Phase 2 complete)*
+*Last updated: 2026-02-11 after completing plan 03-02 (display name identity system)*
