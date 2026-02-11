@@ -147,8 +147,7 @@ class AcceptRejectWidget extends WidgetType {
 /**
  * ViewPlugin that applies decorations (CSS classes) to CriticMarkup ranges.
  * Decorations are rebuilt when the document changes, viewport changes, or selection changes.
- * When cursor is outside a range, delimiters are hidden using cm-hidden-syntax.
- * When cursor is inside, the full markup (including delimiters) is shown.
+ * Delimiters and metadata are always hidden; accept/reject buttons shown when cursor is inside.
  */
 export const criticMarkupPlugin = ViewPlugin.fromClass(
   class {
@@ -190,15 +189,30 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
         const className = TYPE_CLASSES[range.type];
         const cursorInside = selectionIntersects(selection, range.from, range.to);
 
-        if (cursorInside) {
-          // Cursor inside - show everything, apply class to whole range
-          decorations.push({
-            from: range.from,
-            to: range.to,
-            deco: Decoration.mark({ class: className }),
-          });
+        // Always hide delimiters and metadata, only show colored content
+        // Opening delimiter + metadata (everything before content)
+        decorations.push({
+          from: range.from,
+          to: range.contentFrom,
+          deco: Decoration.mark({ class: 'cm-hidden-syntax' }),
+        });
 
-          // Add accept/reject buttons at end of content (before closing delimiter)
+        // Content (between delimiters)
+        decorations.push({
+          from: range.contentFrom,
+          to: range.contentTo,
+          deco: Decoration.mark({ class: className }),
+        });
+
+        // Closing delimiter
+        decorations.push({
+          from: range.contentTo,
+          to: range.to,
+          deco: Decoration.mark({ class: 'cm-hidden-syntax' }),
+        });
+
+        // When cursor is inside, also show accept/reject buttons
+        if (cursorInside) {
           decorations.push({
             from: range.contentTo,
             to: range.contentTo,
@@ -206,30 +220,6 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
               widget: new AcceptRejectWidget(range.from, range.to),
               side: 1, // After the content
             }),
-          });
-        } else {
-          // Cursor outside - hide delimiters (including metadata), style content only
-          // Use contentFrom/contentTo from parser - these account for metadata
-
-          // Opening delimiter + metadata (everything before content)
-          decorations.push({
-            from: range.from,
-            to: range.contentFrom,
-            deco: Decoration.mark({ class: 'cm-hidden-syntax' }),
-          });
-
-          // Content (between delimiters)
-          decorations.push({
-            from: range.contentFrom,
-            to: range.contentTo,
-            deco: Decoration.mark({ class: className }),
-          });
-
-          // Closing delimiter
-          decorations.push({
-            from: range.contentTo,
-            to: range.to,
-            deco: Decoration.mark({ class: 'cm-hidden-syntax' }),
           });
         }
       }
@@ -247,6 +237,44 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
 
       for (const d of decorations) {
         builder.add(d.from, d.to, d.deco);
+      }
+
+      return builder.finish();
+    }
+  },
+  {
+    decorations: (v) => v.decorations,
+  }
+);
+
+/**
+ * ViewPlugin for source mode - applies color classes to entire CriticMarkup ranges
+ * without hiding any syntax. Shows raw markup with color coding.
+ */
+export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = this.buildDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged) {
+        this.decorations = this.buildDecorations(update.view);
+      }
+    }
+
+    buildDecorations(view: EditorView): DecorationSet {
+      const builder = new RangeSetBuilder<Decoration>();
+      const ranges = view.state.field(criticMarkupField);
+
+      for (const range of ranges) {
+        builder.add(
+          range.from,
+          range.to,
+          Decoration.mark({ class: TYPE_CLASSES[range.type] })
+        );
       }
 
       return builder.finish();

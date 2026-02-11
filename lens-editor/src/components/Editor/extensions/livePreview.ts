@@ -21,7 +21,7 @@ import {
   drawSelection,
   WidgetType,
 } from '@codemirror/view';
-import { criticMarkupCompartment, criticMarkupPlugin } from './criticmarkup';
+import { criticMarkupCompartment, criticMarkupPlugin, criticMarkupSourcePlugin } from './criticmarkup';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { RangeSetBuilder, Compartment, EditorSelection } from '@codemirror/state';
@@ -388,7 +388,7 @@ export function toggleSourceMode(view: EditorView, sourceMode: boolean) {
         sourceMode ? [] : [livePreviewPlugin, livePreviewTheme]
       ),
       criticMarkupCompartment.reconfigure(
-        sourceMode ? [] : criticMarkupPlugin
+        sourceMode ? criticMarkupSourcePlugin : criticMarkupPlugin
       ),
     ],
   });
