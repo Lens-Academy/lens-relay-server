@@ -125,21 +125,80 @@ export async function fetchChannelInfo(
   return data;
 }
 
-// --- Bot message sending ---
+// --- Webhook-based message sending ---
+
+interface ChannelWebhook {
+  id: string;
+  token: string;
+}
+
+const WEBHOOK_NAME = 'Lens Editor Bridge';
+
+// In-memory cache: channelId -> webhook credentials
+const webhookCache = new Map<string, ChannelWebhook>();
 
 /**
- * Send a message to a Discord channel using the bot token.
- * Uses POST /channels/{channelId}/messages with bot auth.
+ * Get or create a webhook for the given channel.
+ * Bot must have MANAGE_WEBHOOKS permission.
  */
-export async function sendBotMessage(
-  channelId: string,
-  content: string
-): Promise<DiscordMessage> {
-  const url = `${DISCORD_API_BASE}/channels/${channelId}/messages`;
-  const res = await fetch(url, {
+async function getOrCreateWebhook(
+  channelId: string
+): Promise<ChannelWebhook> {
+  const cached = webhookCache.get(channelId);
+  if (cached) return cached;
+
+  // Check for existing webhook we own
+  const listUrl = `${DISCORD_API_BASE}/channels/${channelId}/webhooks`;
+  const listRes = await fetch(listUrl, { headers: authHeaders() });
+  const webhooks = await handleResponse<
+    Array<{ id: string; token?: string; name: string; user?: { id: string } }>
+  >(listRes);
+
+  const botTokenId = getToken(); // used to identify our bot
+  const existing = webhooks.find(
+    (w) => w.name === WEBHOOK_NAME && w.token
+  );
+
+  if (existing) {
+    const entry = { id: existing.id, token: existing.token! };
+    webhookCache.set(channelId, entry);
+    return entry;
+  }
+
+  // Create a new webhook
+  const createUrl = `${DISCORD_API_BASE}/channels/${channelId}/webhooks`;
+  const createRes = await fetch(createUrl, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ name: WEBHOOK_NAME }),
+  });
+  const created = await handleResponse<{ id: string; token: string }>(
+    createRes
+  );
+
+  const entry = { id: created.id, token: created.token };
+  webhookCache.set(channelId, entry);
+  console.log(
+    `[discord-client] Created webhook for channel ${channelId}`
+  );
+  return entry;
+}
+
+/**
+ * Send a message to a Discord channel via a bot-managed webhook.
+ * The webhook is auto-created per channel; username/avatar can be customized per message.
+ */
+export async function sendWebhookMessage(
+  channelId: string,
+  content: string,
+  username: string
+): Promise<DiscordMessage> {
+  const webhook = await getOrCreateWebhook(channelId);
+  const url = `${DISCORD_API_BASE}/webhooks/${webhook.id}/${webhook.token}?wait=true`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, username }),
   });
 
   return handleResponse<DiscordMessage>(res);

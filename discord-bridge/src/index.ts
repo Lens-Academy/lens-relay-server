@@ -6,7 +6,7 @@ import { streamSSE } from 'hono/streaming';
 import {
   fetchChannelMessages,
   fetchChannelInfo,
-  sendBotMessage,
+  sendWebhookMessage,
   RateLimitError,
   DiscordApiError,
 } from './discord-client.js';
@@ -150,12 +150,11 @@ app.post('/api/channels/:channelId/messages', async (c) => {
     return c.json({ error: 'Message exceeds 2000 character limit' }, 400);
   }
 
-  // Format message with username prefix (POST-03)
+  // Send via webhook with custom display name (POST-03)
   const displayName = `${body.username.trim()} (unverified)`;
-  const formattedContent = `**${displayName}:** ${body.content}`;
 
   try {
-    const result = await sendBotMessage(channelId, formattedContent);
+    const result = await sendWebhookMessage(channelId, body.content, displayName);
     return c.json(result, 200);
   } catch (err) {
     if (err instanceof RateLimitError) {
