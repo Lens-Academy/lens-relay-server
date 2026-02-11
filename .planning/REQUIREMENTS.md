@@ -7,18 +7,18 @@
 
 ### Channel Mapping
 
-- [ ] **CHAN-01**: Editor detects `discussion` frontmatter field and extracts Discord channel/thread ID
-- [ ] **CHAN-02**: Chat panel automatically displays for documents with a `discussion` link
+- [x] **CHAN-01**: Editor detects `discussion` frontmatter field and extracts Discord channel/thread ID
+- [x] **CHAN-02**: Chat panel automatically displays for documents with a `discussion` link
 
 ### Message Display
 
-- [ ] **MSG-01**: Panel fetches and displays last 50 messages on open
-- [ ] **MSG-02**: New messages stream in live via Discord bot gateway
-- [ ] **MSG-03**: Messages show author username and avatar
-- [ ] **MSG-04**: Messages show relative/absolute timestamps
-- [ ] **MSG-05**: Messages render Discord-flavored markdown (bold, italic, code, quotes, strikethrough)
-- [ ] **MSG-06**: Panel auto-scrolls to newest messages; stops when user scrolls up
-- [ ] **MSG-07**: "New messages" indicator appears when scrolled up and new messages arrive
+- [x] **MSG-01**: Panel fetches and displays last 50 messages on open
+- [x] **MSG-02**: New messages stream in live via Discord bot gateway
+- [x] **MSG-03**: Messages show author username and avatar
+- [x] **MSG-04**: Messages show relative/absolute timestamps
+- [x] **MSG-05**: Messages render Discord-flavored markdown (bold, italic, code, quotes, strikethrough)
+- [x] **MSG-06**: Panel auto-scrolls to newest messages; stops when user scrolls up
+- [x] **MSG-07**: "New messages" indicator appears when scrolled up and new messages arrive
 
 ### Posting
 
@@ -28,16 +28,16 @@
 
 ### UX
 
-- [ ] **UX-01**: Loading spinner shown while fetching message history
-- [ ] **UX-02**: Error state with retry button on connection failure
-- [ ] **UX-03**: Connection status indicator (live/reconnecting/disconnected)
+- [x] **UX-01**: Loading spinner shown while fetching message history
+- [x] **UX-02**: Error state with retry button on connection failure
+- [x] **UX-03**: Connection status indicator (live/reconnecting/disconnected)
 
 ### Infrastructure
 
-- [ ] **INFRA-01**: Discord bot sidecar service connects to gateway and streams events
-- [ ] **INFRA-02**: SSE endpoint delivers live channel events to browser clients
+- [x] **INFRA-01**: Discord bot sidecar service connects to gateway and streams events
+- [x] **INFRA-02**: SSE endpoint delivers live channel events to browser clients
 - [x] **INFRA-03**: Bot API proxy endpoint posts messages without exposing bot token to browser
-- [ ] **INFRA-04**: REST proxy endpoint fetches message history from Discord API
+- [x] **INFRA-04**: REST proxy endpoint fetches message history from Discord API
 
 ## v2 Requirements
 
@@ -89,8 +89,8 @@
 | POST-02 | 3 | Complete |
 | POST-03 | 3 | Complete |
 | UX-01 | 1 | Complete |
-| UX-02 | 4 | Pending |
-| UX-03 | 4 | Pending |
+| UX-02 | 4 | Complete |
+| UX-03 | 4 | Complete |
 | INFRA-01 | 1 | Complete |
 | INFRA-02 | 2 | Complete |
 | INFRA-03 | 3 | Complete |

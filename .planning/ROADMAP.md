@@ -70,7 +70,7 @@ Plans:
 **Plans:** 1 plan
 
 Plans:
-- [ ] 04-01-PLAN.md -- Connection resilience: gateway status broadcasting, SSE reconnection with refetch, heartbeat timeout, terminal disconnect + retry, status text labels
+- [x] 04-01-PLAN.md -- Connection resilience: gateway status broadcasting, SSE reconnection with refetch, heartbeat timeout, terminal disconnect + retry, status text labels
 
 **Success Criteria:**
 1. When the SSE connection drops, a visible status indicator changes from "Live" to "Reconnecting" or "Disconnected"
