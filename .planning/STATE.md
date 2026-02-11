@@ -5,24 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Users can participate in the Discord discussion about a document without leaving the editor.
-**Current focus:** Phase 3 in progress (Posting Messages). Plans 01 and 02 complete. Plan 03 (compose UI) remaining.
+**Current focus:** Phase 3 complete. Phase 4 (Connection Resilience) remaining.
 
 ## Position
 
-- **Current phase:** 3 of 4 (Posting Messages)
-- **Plan:** 2 of 3 in phase complete (03-01, 03-02 done; 03-03 remaining)
-- **Status:** In progress
-- **Last activity:** 2026-02-11 - Completed 03-01-PLAN.md (webhook proxy endpoint)
+- **Current phase:** 3 of 4 complete (Posting Messages)
+- **Plan:** 3 of 3 in phase complete (03-01, 03-02, 03-03 done)
+- **Status:** Phase 3 verified and complete
+- **Last activity:** 2026-02-11 - Completed Phase 3 (Posting Messages)
 
-Progress: `[########.] 8/9 plans (89%)`
+Progress: `[#########.] 9/10 plans (90%)`
 
 ## Recent Decisions
 
 | Decision | Made In | Rationale |
 |----------|---------|-----------|
-| Webhook URL from DISCORD_WEBHOOK_MAP or DISCORD_WEBHOOK_URL | 03-01 | Per-channel mapping with single-URL fallback for flexibility |
-| 503 for missing webhook config (not 500) | 03-01 | Service Unavailable semantics match missing configuration dependency |
-| Server-side " (unverified)" suffix in endpoint handler | 03-01 | Ensures suffix is always applied; browser cannot bypass it |
+| Bot API instead of webhooks for posting | 03-01 (refactored) | User preference: simpler setup, reuses existing bot token, no webhook URL needed |
+| Server-side message formatting with "(unverified)" | 03-01 | Ensures suffix is always applied; browser cannot bypass it |
 | Plain div overlay for non-closable modal (not Radix) | 03-02 | Radix Dialog is dismissable by design; plain div gives full control |
 | maxLength 66 for display name input | 03-02 | 80 minus 14 chars for " (unverified)" suffix appended by bridge |
 | Client-side "clyde" rejection | 03-02 | Discord rejects webhook usernames containing "clyde" |
@@ -49,8 +48,8 @@ Progress: `[########.] 8/9 plans (89%)`
 ## Session Continuity
 
 - **Last session:** 2026-02-11
-- **Stopped at:** Completed 03-01-PLAN.md (webhook proxy endpoint)
+- **Stopped at:** Completed Phase 3 (Posting Messages) - all 3 plans executed, verified
 - **Resume file:** None
 
 ---
-*Last updated: 2026-02-11 after completing plan 03-01 (webhook proxy endpoint)*
+*Last updated: 2026-02-11 after completing Phase 3 (Posting Messages)*

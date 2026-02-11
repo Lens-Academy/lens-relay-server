@@ -22,9 +22,9 @@
 
 ### Posting
 
-- [ ] **POST-01**: User can post messages via webhook with self-reported display name
-- [ ] **POST-02**: Display name persisted in localStorage across sessions
-- [ ] **POST-03**: Webhook messages show "(unverified)" tag appended to username
+- [x] **POST-01**: User can post messages via bot API with self-reported display name
+- [x] **POST-02**: Display name persisted in localStorage across sessions
+- [x] **POST-03**: Bot messages show "(unverified)" tag appended to username
 
 ### UX
 
@@ -36,7 +36,7 @@
 
 - [ ] **INFRA-01**: Discord bot sidecar service connects to gateway and streams events
 - [ ] **INFRA-02**: SSE endpoint delivers live channel events to browser clients
-- [ ] **INFRA-03**: Webhook proxy endpoint posts messages without exposing webhook URL to browser
+- [x] **INFRA-03**: Bot API proxy endpoint posts messages without exposing bot token to browser
 - [ ] **INFRA-04**: REST proxy endpoint fetches message history from Discord API
 
 ## v2 Requirements
@@ -85,15 +85,15 @@
 | MSG-05 | 2 | Complete |
 | MSG-06 | 2 | Complete |
 | MSG-07 | 2 | Complete |
-| POST-01 | 3 | Pending |
-| POST-02 | 3 | Pending |
-| POST-03 | 3 | Pending |
+| POST-01 | 3 | Complete |
+| POST-02 | 3 | Complete |
+| POST-03 | 3 | Complete |
 | UX-01 | 1 | Complete |
 | UX-02 | 4 | Pending |
 | UX-03 | 4 | Pending |
 | INFRA-01 | 1 | Complete |
 | INFRA-02 | 2 | Complete |
-| INFRA-03 | 3 | Pending |
+| INFRA-03 | 3 | Complete |
 | INFRA-04 | 1 | Complete |
 
 **Coverage:**

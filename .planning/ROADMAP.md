@@ -54,9 +54,9 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 03-01-PLAN.md -- Webhook proxy endpoint in discord-bridge (INFRA-03, POST-03)
-- [ ] 03-02-PLAN.md -- Display name identity system with modal and badge (POST-02)
-- [ ] 03-03-PLAN.md -- Compose box and send integration (POST-01)
+- [x] 03-01-PLAN.md -- Bot message proxy endpoint in discord-bridge (INFRA-03, POST-03)
+- [x] 03-02-PLAN.md -- Display name identity system with modal and badge (POST-02)
+- [x] 03-03-PLAN.md -- Compose box and send integration (POST-01)
 
 **Success Criteria:**
 1. User enters a display name once and it persists across browser sessions
