@@ -1,6 +1,7 @@
 use axum::{
     extract::State,
     http::{HeaderMap, HeaderValue, StatusCode},
+    middleware::Next,
     response::{IntoResponse, Response},
     Json,
 };
@@ -11,6 +12,30 @@ use tracing::debug;
 use super::jsonrpc::{self, parse_message, JsonRpcMessage, JsonRpcResponse, PARSE_ERROR};
 use super::router;
 use crate::server::Server;
+
+/// Middleware that validates Bearer token auth for MCP endpoints.
+pub async fn mcp_auth_middleware(
+    State(expected_key): State<String>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let auth_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(value) if value.starts_with("Bearer ") => {
+            let token = &value["Bearer ".len()..];
+            if token == expected_key {
+                next.run(req).await
+            } else {
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        }
+        _ => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
 
 /// Handle POST /mcp — JSON-RPC messages (requests and notifications).
 pub async fn handle_mcp_post(

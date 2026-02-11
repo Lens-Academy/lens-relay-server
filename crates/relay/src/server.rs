@@ -440,6 +440,7 @@ pub struct Server {
     search_tx: Option<tokio::sync::mpsc::Sender<String>>,
     doc_resolver: Arc<DocumentResolver>,
     pub(crate) mcp_sessions: Arc<crate::mcp::session::SessionManager>,
+    mcp_api_key: Option<String>,
 }
 
 impl Server {
@@ -542,6 +543,13 @@ impl Server {
             None
         };
 
+        let mcp_api_key = std::env::var("MCP_API_KEY").ok();
+        if mcp_api_key.is_some() {
+            tracing::info!("MCP endpoint enabled (MCP_API_KEY is set)");
+        } else {
+            tracing::info!("MCP endpoint disabled (MCP_API_KEY not set)");
+        }
+
         Ok(Self {
             docs,
             doc_worker_tracker: TaskTracker::new(),
@@ -561,6 +569,7 @@ impl Server {
             search_tx: search_tx_final,
             doc_resolver: Arc::new(DocumentResolver::new()),
             mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
+            mcp_api_key,
         })
     }
 
@@ -598,6 +607,7 @@ impl Server {
             search_tx: None,
             doc_resolver: Arc::new(DocumentResolver::new()),
             mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
+            mcp_api_key: None,
         })
     }
 
@@ -1169,13 +1179,24 @@ impl Server {
                 get(handle_socket_upgrade_full_path),
             )
             .route("/webhook/reload", post(reload_webhook_config_endpoint))
-            .route("/search", get(handle_search))
-            .route(
-                "/mcp",
-                post(crate::mcp::transport::handle_mcp_post)
-                    .get(crate::mcp::transport::handle_mcp_get)
-                    .delete(crate::mcp::transport::handle_mcp_delete),
-            );
+            .route("/search", get(handle_search));
+
+        // Only register /mcp if MCP_API_KEY is set
+        if let Some(ref key) = self.mcp_api_key {
+            let mcp_routes = Router::new()
+                .route(
+                    "/",
+                    post(crate::mcp::transport::handle_mcp_post)
+                        .get(crate::mcp::transport::handle_mcp_get)
+                        .delete(crate::mcp::transport::handle_mcp_delete),
+                )
+                .layer(middleware::from_fn_with_state(
+                    key.clone(),
+                    crate::mcp::transport::mcp_auth_middleware,
+                ))
+                .with_state(self.clone());
+            router = router.nest("/mcp", mcp_routes);
+        }
 
         // Only add file endpoints if a store is configured
         if let Some(store) = &self.store {
