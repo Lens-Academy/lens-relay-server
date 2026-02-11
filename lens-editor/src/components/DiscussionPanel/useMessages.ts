@@ -31,6 +31,7 @@ interface UseMessagesResult {
   error: string | null;
   refetch: () => void;
   gatewayStatus: GatewayStatus;
+  sendMessage: (content: string, username: string) => Promise<void>;
 }
 
 /**
@@ -166,5 +167,24 @@ export function useMessages(channelId: string | null): UseMessagesResult {
     };
   }, [channelId]);
 
-  return { messages, channelName, loading, error, refetch, gatewayStatus };
+  const sendMessage = useCallback(
+    async (content: string, username: string) => {
+      if (!channelId) throw new Error('No channel ID');
+
+      const res = await fetch(`/api/discord/channels/${channelId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, username }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: 'Send failed' }));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      // No optimistic insert — message echoes back via SSE
+    },
+    [channelId]
+  );
+
+  return { messages, channelName, loading, error, refetch, gatewayStatus, sendMessage };
 }

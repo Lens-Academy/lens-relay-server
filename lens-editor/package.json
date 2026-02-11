@@ -37,6 +37,7 @@
     "react": "^19.2.0",
     "react-arborist": "^3.4.3",
     "react-dom": "^19.2.0",
+    "react-textarea-autosize": "^8.5.9",
     "y-codemirror.next": "^0.3.5",
     "yjs": "^13.6.29"
   },
