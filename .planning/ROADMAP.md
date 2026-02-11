@@ -91,7 +91,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md -- Search API client, useSearch hook (TDD), SearchPanel component
+- [x] 05-01-PLAN.md -- Search API client, useSearch hook (TDD), SearchPanel component
 - [ ] 05-02-PLAN.md -- Sidebar integration, SearchInput ref forwarding, Ctrl+K shortcut, visual verification
 
 ## Progress
@@ -105,4 +105,4 @@ Phases 1 and 2 can proceed in parallel. Then 3 -> 4. Phase 5 can proceed after P
 | 2. MCP Transport | 2/2 | Complete | 2026-02-08 |
 | 3. MCP Read-Only Tools | 2/2 | Complete | 2026-02-10 |
 | 4. MCP Search & Edit Tools | 2/2 | Complete | 2026-02-10 |
-| 5. Search UI | 0/2 | Not started | - |
+| 5. Search UI | 1/2 | In progress | - |
