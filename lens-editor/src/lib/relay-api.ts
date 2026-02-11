@@ -248,6 +248,39 @@ export function deleteDocument(
  * Set up debug observer on filemeta Y.Map to log all changes.
  * Call this once after connecting to the folder doc.
  */
+// --- Search API ---
+
+export interface SearchResult {
+  doc_id: string;   // UUID (no RELAY_ID prefix)
+  title: string;
+  folder: string;
+  snippet: string;  // HTML with <mark> tags
+  score: number;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total_hits: number;
+  query: string;
+}
+
+export async function searchDocuments(
+  query: string,
+  limit: number = 20,
+  signal?: AbortSignal
+): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  const response = await fetch(`${API_BASE}/search?${params}`, { signal });
+  if (!response.ok) {
+    throw new Error(`Search failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
+ * Set up debug observer on filemeta Y.Map to log all changes.
+ * Call this once after connecting to the folder doc.
+ */
 export function setupFilemetaDebugObserver(folderDoc: Y.Doc): () => void {
   const filemeta = folderDoc.getMap<FileMetadata>('filemeta_v0');
 
