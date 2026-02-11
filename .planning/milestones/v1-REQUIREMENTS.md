@@ -1,3 +1,13 @@
+# Requirements Archive: v1 Discord Discussion Panel
+
+**Archived:** 2026-02-11
+**Status:** SHIPPED
+
+This is the archived requirements specification for v1.
+For current requirements, see `.planning/REQUIREMENTS.md` (created for next milestone).
+
+---
+
 # Requirements: Discord Discussion Panel
 
 **Defined:** 2026-02-08
@@ -39,7 +49,7 @@
 - [x] **INFRA-03**: Bot API proxy endpoint posts messages without exposing bot token to browser
 - [x] **INFRA-04**: REST proxy endpoint fetches message history from Discord API
 
-## v2 Requirements
+## v2 Requirements (Deferred)
 
 ### Rich Rendering
 
@@ -62,10 +72,10 @@
 |---------|--------|
 | Discord OAuth login | Unnecessary complexity; self-reported name is sufficient |
 | Channel switching | One document = one channel; auto-mapped from frontmatter |
-| Posting from authenticated Discord accounts | Massive security surface; webhook is the designed abstraction |
+| Posting from authenticated Discord accounts | Massive security surface; bot API is the designed abstraction |
 | Reactions / threading | Complex subsystems with marginal value for a side panel |
 | File upload from panel | Large attack surface; show download links for Discord attachments instead |
-| Message editing/deleting from panel | Webhook messages are fire-and-forget; users clarify with follow-ups |
+| Message editing/deleting from panel | Bot messages are fire-and-forget; users clarify with follow-ups |
 | Typing indicators | Marginal value for a side panel |
 | Member list / online status | Noise; focus is the conversation |
 | Custom CSS theming engine | Match editor's existing design system instead |
@@ -100,11 +110,14 @@
 - v1 requirements: 19 total
 - Mapped to phases: 19
 - Unmapped: 0
-- Phase 1: 8 requirements (CHAN-01, CHAN-02, MSG-01, MSG-03, MSG-04, UX-01, INFRA-01, INFRA-04)
-- Phase 2: 5 requirements (MSG-02, MSG-05, MSG-06, MSG-07, INFRA-02)
-- Phase 3: 4 requirements (POST-01, POST-02, POST-03, INFRA-03)
-- Phase 4: 2 requirements (UX-02, UX-03)
 
 ---
-*Requirements defined: 2026-02-08*
-*Last updated: 2026-02-08 after roadmap creation (phase mapping added)*
+
+## Milestone Summary
+
+**Shipped:** 19 of 19 v1 requirements
+**Adjusted:** POST-01/POST-03/INFRA-03 originally specified webhooks; switched to bot API for simpler setup (reuses existing bot token)
+**Dropped:** None
+
+---
+*Archived: 2026-02-11 as part of v1 milestone completion*
