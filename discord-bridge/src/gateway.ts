@@ -48,14 +48,22 @@ export function startGateway(): void {
 
   client.on(Events.ClientReady, (c) => {
     console.log(`[gateway] Connected as ${c.user.tag}`);
+    gatewayEvents.emit('status', { gateway: 'connected' });
   });
 
   client.on(Events.ShardReconnecting, () => {
     console.log('[gateway] Reconnecting...');
+    gatewayEvents.emit('status', { gateway: 'reconnecting' });
   });
 
   client.on(Events.ShardResume, () => {
     console.log('[gateway] Resumed');
+    gatewayEvents.emit('status', { gateway: 'connected' });
+  });
+
+  client.on(Events.ShardDisconnect, (ev, shardId) => {
+    console.log(`[gateway] Shard ${shardId} disconnected (code ${ev.code})`);
+    gatewayEvents.emit('status', { gateway: 'disconnected' });
   });
 
   client.login(token).catch((err) => {

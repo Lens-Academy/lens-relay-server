@@ -53,8 +53,22 @@ app.get('/api/channels/:channelId/events', async (c) => {
 
     gatewayEvents.on(`message:${channelId}`, handler);
 
+    // Forward gateway status changes to this SSE client
+    const statusHandler = async (data: unknown) => {
+      try {
+        await stream.writeSSE({
+          event: 'status',
+          data: JSON.stringify(data),
+        });
+      } catch {
+        // Client disconnected, handler will be cleaned up by onAbort
+      }
+    };
+    gatewayEvents.on('status', statusHandler);
+
     stream.onAbort(() => {
       gatewayEvents.off(`message:${channelId}`, handler);
+      gatewayEvents.off('status', statusHandler);
     });
 
     // Keep connection alive with periodic heartbeat
