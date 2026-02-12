@@ -399,11 +399,22 @@ impl LinkIndexer {
     }
 
     pub async fn on_document_update(&self, doc_id: &str) {
-        let already_pending = self.pending.contains_key(doc_id);
-        self.pending.insert(doc_id.to_string(), Instant::now());
+        use dashmap::mapref::entry::Entry;
+        // Atomically check-and-insert to avoid TOCTOU race where two concurrent
+        // calls both see "not pending" and double-send to the channel.
+        let is_new = match self.pending.entry(doc_id.to_string()) {
+            Entry::Occupied(mut e) => {
+                e.insert(Instant::now());
+                false
+            }
+            Entry::Vacant(e) => {
+                e.insert(Instant::now());
+                true
+            }
+        };
         // Only send to channel on the first update — subsequent updates just
         // reset the timestamp for debouncing without flooding the channel.
-        if !already_pending {
+        if is_new {
             if let Err(e) = self.index_tx.send(doc_id.to_string()).await {
                 tracing::error!(
                     "Link indexer channel send failed (receiver dropped — worker dead?): {}",
