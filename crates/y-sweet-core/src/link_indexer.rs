@@ -154,7 +154,7 @@ fn resolve_links_to_uuids(
 /// Find all loaded folder docs (docs with non-empty filemeta_v0).
 /// Returns doc_ids of all folder docs.
 pub fn find_all_folder_docs(docs: &DashMap<String, DocWithSyncKv>) -> Vec<String> {
-    docs.iter()
+    let mut result: Vec<String> = docs.iter()
         .filter_map(|entry| {
             let awareness = entry.value().awareness();
             let guard = awareness.read().unwrap();
@@ -166,7 +166,9 @@ pub fn find_all_folder_docs(docs: &DashMap<String, DocWithSyncKv>) -> Vec<String
             }
             None
         })
-        .collect()
+        .collect();
+    result.sort();
+    result
 }
 
 /// Check if a doc is a folder doc (has non-empty filemeta_v0).

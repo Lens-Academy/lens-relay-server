@@ -54,8 +54,7 @@ impl DocumentResolver {
         self.path_to_doc.clear();
         self.uuid_to_path.clear();
 
-        let mut folder_doc_ids = find_all_folder_docs(docs);
-        folder_doc_ids.sort(); // Deterministic folder ordering by doc_id
+        let folder_doc_ids = find_all_folder_docs(docs);
 
         for (folder_idx, folder_doc_id) in folder_doc_ids.iter().enumerate() {
             if let Some(doc_ref) = docs.get(folder_doc_id) {

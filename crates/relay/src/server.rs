@@ -311,13 +311,7 @@ fn search_find_title_and_folder(
                         .unwrap_or(path_str)
                         .to_string();
 
-                    // Derive folder name from folder doc position
-                    // First folder doc = "Lens", second = "Lens Edu"
-                    let folder_name = if folder_idx == 0 {
-                        "Lens".to_string()
-                    } else {
-                        "Lens Edu".to_string()
-                    };
+                    let folder_name = y_sweet_core::doc_resolver::derive_folder_name(folder_idx).to_string();
 
                     return (title, folder_name);
                 }
@@ -930,11 +924,7 @@ impl Server {
                 std::collections::HashMap::new();
 
             for (folder_idx, folder_doc_id) in folder_doc_ids.iter().enumerate() {
-                let folder_name = if folder_idx == 0 {
-                    "Lens".to_string()
-                } else {
-                    "Lens Edu".to_string()
-                };
+                let folder_name = y_sweet_core::doc_resolver::derive_folder_name(folder_idx).to_string();
 
                 let Some(doc_ref) = self.docs.get(folder_doc_id) else {
                     continue;
