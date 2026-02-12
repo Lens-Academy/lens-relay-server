@@ -145,6 +145,10 @@ impl SearchIndex {
     ///
     /// Returns an empty Vec for empty or whitespace-only queries.
     /// Uses `parse_query_lenient` to tolerate syntax errors in the query string.
+    ///
+    /// When Tantivy's snippet generator can't find highlights in the body
+    /// (e.g. title-only matches), falls back to a manual substring search
+    /// that extracts context around the first matching query term.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         // Guard: empty or whitespace-only queries return nothing
         if query.trim().is_empty() {
@@ -159,7 +163,14 @@ impl SearchIndex {
         // Set up snippet generator for the body field
         let mut snippet_generator =
             SnippetGenerator::create(&searcher, &*parsed_query, self.body_field)?;
-        snippet_generator.set_max_num_chars(150);
+        snippet_generator.set_max_num_chars(200);
+
+        // Extract query terms for fallback snippet generation
+        let query_terms: Vec<String> = query
+            .split_whitespace()
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_lowercase())
+            .collect();
 
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, doc_address) in top_docs {
@@ -181,8 +192,19 @@ impl SearchIndex {
                 .unwrap_or("")
                 .to_string();
 
+            let body = retrieved
+                .get_first(self.body_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
             let snippet = snippet_generator.snippet_from_doc(&retrieved);
-            let snippet_html = render_snippet_with_mark(&snippet);
+            let snippet_html = if snippet.highlighted().is_empty() {
+                // Tantivy found no highlights in the body (likely a title-only match).
+                // Fall back to manual substring search in the body text.
+                generate_fallback_snippet(body, &query_terms, 200)
+            } else {
+                render_snippet_with_mark(&snippet, body)
+            };
 
             results.push(SearchResult {
                 doc_id,
@@ -198,35 +220,241 @@ impl SearchIndex {
 }
 
 /// Render a tantivy Snippet using `<mark>` tags instead of the default `<b>` tags.
-fn render_snippet_with_mark(snippet: &tantivy::snippet::Snippet) -> String {
+/// HTML-escapes non-highlighted text to prevent injection via `dangerouslySetInnerHTML`.
+/// Adds "..." when the fragment is a subset of the full body text.
+fn render_snippet_with_mark(snippet: &tantivy::snippet::Snippet, full_body: &str) -> String {
     let fragment = snippet.fragment();
     let highlighted = snippet.highlighted();
 
     if highlighted.is_empty() {
-        return fragment.to_string();
+        return escape_html(fragment);
     }
 
     let mut result = String::new();
     let mut pos = 0;
 
     for range in highlighted {
-        // Append text before this highlight
+        // Append escaped text before this highlight
         if range.start > pos {
-            result.push_str(&fragment[pos..range.start]);
+            result.push_str(&escape_html(&fragment[pos..range.start]));
         }
-        // Append highlighted text with <mark> tags
+        // Append highlighted text with <mark> tags (escaped inside)
         result.push_str("<mark>");
-        result.push_str(&fragment[range.start..range.end]);
+        result.push_str(&escape_html(&fragment[range.start..range.end]));
         result.push_str("</mark>");
         pos = range.end;
     }
 
-    // Append remaining text after last highlight
+    // Append remaining escaped text after last highlight
     if pos < fragment.len() {
-        result.push_str(&fragment[pos..]);
+        result.push_str(&escape_html(&fragment[pos..]));
+    }
+
+    // Add "..." indicators when the fragment is truncated
+    if !fragment.is_empty() && fragment.len() < full_body.len() {
+        let prefix_len = 20.min(fragment.len());
+        let is_at_start = full_body.starts_with(&fragment[..prefix_len]);
+        if !is_at_start {
+            result = format!("...{}", result);
+        }
+
+        let suffix_len = 20.min(fragment.len());
+        let is_at_end = full_body.ends_with(&fragment[fragment.len() - suffix_len..]);
+        if !is_at_end {
+            result.push_str("...");
+        }
     }
 
     result
+}
+
+/// Escape HTML special characters to prevent XSS when rendering snippets.
+fn escape_html(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' => result.push_str("&quot;"),
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
+/// Generate a snippet by manually searching for query terms in the body text.
+/// Used as a fallback when Tantivy's snippet generator can't find highlights
+/// (e.g. when the document matched on title but not body).
+///
+/// Returns an HTML string with `<mark>` tags around matching terms,
+/// or an empty string if no query terms appear in the body.
+fn generate_fallback_snippet(body: &str, query_terms: &[String], max_chars: usize) -> String {
+    if body.is_empty() || query_terms.is_empty() {
+        return String::new();
+    }
+
+    // Find the byte position of the earliest matching query term (case-insensitive ASCII)
+    let mut best_match: Option<(usize, usize)> = None; // (start, end) byte positions
+
+    for term in query_terms {
+        if let Some((start, end)) = find_ascii_ci(body, term) {
+            match best_match {
+                None => best_match = Some((start, end)),
+                Some((existing_start, _)) if start < existing_start => {
+                    best_match = Some((start, end));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let (match_start, _match_end) = match best_match {
+        Some(m) => m,
+        None => return String::new(), // No query terms found in body
+    };
+
+    // Extract a window of text centered on the match
+    let half = max_chars / 2;
+
+    // Find fragment start — snap to word boundary
+    let raw_start = match_start.saturating_sub(half);
+    let frag_start = if raw_start == 0 {
+        0
+    } else {
+        // Snap forward to char boundary, then to next space
+        let safe = snap_char_boundary_forward(body, raw_start);
+        body[safe..].find(' ').map_or(safe, |off| safe + off + 1)
+    };
+
+    // Find fragment end — snap to word boundary
+    let raw_end = (match_start + half).min(body.len());
+    let frag_end = if raw_end >= body.len() {
+        body.len()
+    } else {
+        let safe = snap_char_boundary_backward(body, raw_end);
+        body[..safe].rfind(' ').unwrap_or(safe)
+    };
+
+    if frag_start >= frag_end {
+        return String::new();
+    }
+
+    let fragment = &body[frag_start..frag_end];
+
+    // Find all occurrences of all query terms in the fragment for highlighting
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for term in query_terms {
+        ranges.extend(find_all_ascii_ci(fragment, term));
+    }
+
+    // Sort and merge overlapping ranges
+    ranges.sort_by_key(|r| r.0);
+    let merged = merge_ranges(&ranges);
+
+    // Build HTML with ellipsis and highlights
+    let mut html = String::new();
+    if frag_start > 0 {
+        html.push_str("...");
+    }
+
+    let mut pos = 0;
+    for (start, end) in &merged {
+        if *start > pos {
+            html.push_str(&escape_html(&fragment[pos..*start]));
+        }
+        html.push_str("<mark>");
+        html.push_str(&escape_html(&fragment[*start..*end]));
+        html.push_str("</mark>");
+        pos = *end;
+    }
+    if pos < fragment.len() {
+        html.push_str(&escape_html(&fragment[pos..]));
+    }
+
+    if frag_end < body.len() {
+        html.push_str("...");
+    }
+
+    html
+}
+
+/// Case-insensitive ASCII substring search. Returns byte position range in `haystack`.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle_bytes: Vec<u8> = needle.bytes().map(|b| b.to_ascii_lowercase()).collect();
+    let needle_len = needle_bytes.len();
+    if needle_len == 0 || needle_len > haystack.len() {
+        return None;
+    }
+    let hay = haystack.as_bytes();
+    for i in 0..=(hay.len() - needle_len) {
+        if hay[i..i + needle_len]
+            .iter()
+            .map(|b| b.to_ascii_lowercase())
+            .eq(needle_bytes.iter().copied())
+        {
+            return Some((i, i + needle_len));
+        }
+    }
+    None
+}
+
+/// Find all non-overlapping case-insensitive ASCII matches.
+fn find_all_ascii_ci(haystack: &str, needle: &str) -> Vec<(usize, usize)> {
+    let needle_bytes: Vec<u8> = needle.bytes().map(|b| b.to_ascii_lowercase()).collect();
+    let needle_len = needle_bytes.len();
+    if needle_len == 0 || needle_len > haystack.len() {
+        return Vec::new();
+    }
+    let hay = haystack.as_bytes();
+    let mut results = Vec::new();
+    let mut i = 0;
+    while i + needle_len <= hay.len() {
+        if hay[i..i + needle_len]
+            .iter()
+            .map(|b| b.to_ascii_lowercase())
+            .eq(needle_bytes.iter().copied())
+        {
+            results.push((i, i + needle_len));
+            i += needle_len; // skip past this match
+        } else {
+            i += 1;
+        }
+    }
+    results
+}
+
+/// Snap a byte position forward to the nearest char boundary.
+fn snap_char_boundary_forward(s: &str, pos: usize) -> usize {
+    let mut p = pos.min(s.len());
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    p
+}
+
+/// Snap a byte position backward to the nearest char boundary.
+fn snap_char_boundary_backward(s: &str, pos: usize) -> usize {
+    let mut p = pos.min(s.len());
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+/// Merge overlapping or adjacent byte ranges.
+fn merge_ranges(ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for &(start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    merged
 }
 
 #[cfg(test)]
@@ -492,5 +720,181 @@ mod tests {
         let results = index.search("Content", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].folder, "Lens Edu");
+    }
+
+    #[test]
+    fn title_only_match_uses_fallback_snippet() {
+        let index = create_index();
+        // "quantum" appears in both title and body, but at different positions.
+        // The body has "quantum" deep inside, not near the beginning.
+        let body = "This is a long introduction about physics. ".repeat(10)
+            + "The quantum realm is fascinating and complex. "
+            + &"More text follows here with other topics. ".repeat(5);
+        index
+            .add_document("doc1", "Quantum Physics", &body, "Lens")
+            .unwrap();
+        let results = index.search("quantum", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        let snippet = &results[0].snippet;
+        // The snippet should contain the highlighted match, not just the beginning
+        assert!(
+            snippet.contains("<mark>"),
+            "snippet should have highlights even for deep body match, got: {}",
+            &snippet[..snippet.len().min(200)]
+        );
+    }
+
+    #[test]
+    fn title_only_match_no_body_occurrence_returns_empty_snippet() {
+        let index = create_index();
+        // "quantum" only in title, not in body at all
+        index
+            .add_document(
+                "doc1",
+                "Quantum Physics",
+                "This document discusses forces and energy in nature.",
+                "Lens",
+            )
+            .unwrap();
+        let results = index.search("quantum", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        // Should return empty snippet since "quantum" is nowhere in the body
+        assert!(
+            results[0].snippet.is_empty(),
+            "snippet should be empty when term only in title, got: {}",
+            results[0].snippet
+        );
+    }
+
+    #[test]
+    fn fallback_snippet_has_ellipsis_when_truncated() {
+        // Test the fallback function directly — it's used when Tantivy has no highlights
+        let body = "Beginning of the document with lots of introductory content. ".repeat(10)
+            + "The target keyword appears here in the middle of the text. "
+            + &"And then more content continues after the match. ".repeat(10);
+        let terms = vec!["target".to_string()];
+        let snippet = generate_fallback_snippet(&body, &terms, 200);
+        assert!(
+            snippet.contains("<mark>target</mark>"),
+            "snippet should highlight the match: {}",
+            snippet
+        );
+        assert!(
+            snippet.starts_with("..."),
+            "snippet should start with ... when match is not at beginning: {}",
+            snippet
+        );
+        assert!(
+            snippet.ends_with("..."),
+            "snippet should end with ... when match is not at end: {}",
+            snippet
+        );
+    }
+
+    #[test]
+    fn tantivy_snippet_has_ellipsis_for_body_match() {
+        // When Tantivy finds the match in the body, it should also have "..." for context
+        let index = create_index();
+        let body = "Beginning of the document with lots of introductory content. ".repeat(10)
+            + "The target keyword appears here in the middle of the text. "
+            + &"And then more content continues after the match. ".repeat(10);
+        index
+            .add_document("doc1", "Target Document", &body, "Lens")
+            .unwrap();
+        let results = index.search("target", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        let snippet = &results[0].snippet;
+        assert!(
+            snippet.contains("<mark>"),
+            "snippet should highlight the match: {}",
+            snippet
+        );
+        // Body match in the middle should have "..." on both sides
+        assert!(
+            snippet.starts_with("..."),
+            "snippet should start with ... when match is not at beginning: {}",
+            snippet
+        );
+    }
+
+    #[test]
+    fn snippet_escapes_html_in_body() {
+        let index = create_index();
+        index
+            .add_document(
+                "doc1",
+                "HTML Test",
+                "This has <script>alert('xss')</script> in the body for testing.",
+                "Lens",
+            )
+            .unwrap();
+        let results = index.search("testing", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        let snippet = &results[0].snippet;
+        // Should NOT contain raw HTML tags (except our <mark> tags)
+        assert!(
+            !snippet.contains("<script>"),
+            "snippet should escape HTML: {}",
+            snippet
+        );
+        assert!(
+            snippet.contains("&lt;script&gt;"),
+            "snippet should have escaped HTML entities: {}",
+            snippet
+        );
+    }
+
+    // Unit tests for helper functions
+
+    #[test]
+    fn find_ascii_ci_basic() {
+        assert_eq!(find_ascii_ci("Hello World", "hello"), Some((0, 5)));
+        assert_eq!(find_ascii_ci("Hello World", "WORLD"), Some((6, 11)));
+        assert_eq!(find_ascii_ci("Hello World", "xyz"), None);
+        assert_eq!(find_ascii_ci("", "test"), None);
+        assert_eq!(find_ascii_ci("test", ""), None);
+    }
+
+    #[test]
+    fn find_all_ascii_ci_basic() {
+        let results = find_all_ascii_ci("Test the test of Testing", "test");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], (0, 4));   // "Test"
+        assert_eq!(results[1], (9, 13));  // "test"
+        assert_eq!(results[2], (17, 21)); // "Test" in "Testing"
+    }
+
+    #[test]
+    fn generate_fallback_snippet_basic() {
+        let body = "The quick brown fox jumps over the lazy dog.";
+        let terms = vec!["fox".to_string()];
+        let result = generate_fallback_snippet(body, &terms, 200);
+        assert!(result.contains("<mark>fox</mark>"), "got: {}", result);
+    }
+
+    #[test]
+    fn generate_fallback_snippet_empty_body() {
+        let result = generate_fallback_snippet("", &["test".to_string()], 200);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn generate_fallback_snippet_no_match() {
+        let result = generate_fallback_snippet("Hello world", &["xyz".to_string()], 200);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn merge_ranges_overlapping() {
+        let ranges = vec![(0, 5), (3, 8), (10, 15)];
+        let merged = merge_ranges(&ranges);
+        assert_eq!(merged, vec![(0, 8), (10, 15)]);
+    }
+
+    #[test]
+    fn merge_ranges_adjacent() {
+        let ranges = vec![(0, 5), (5, 10)];
+        let merged = merge_ranges(&ranges);
+        assert_eq!(merged, vec![(0, 10)]);
     }
 }

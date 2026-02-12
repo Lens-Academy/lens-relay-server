@@ -75,21 +75,18 @@ export function SearchPanel({ results, fileNameMatches, loading, error, query, o
                     {result.folder && (
                       <span className="text-xs text-gray-400">{result.folder}</span>
                     )}
-                    <div
-                      className="text-xs text-gray-600 mt-0.5 line-clamp-2 [&_mark]:bg-yellow-200 [&_mark]:rounded-sm"
-                      dangerouslySetInnerHTML={{ __html: result.snippet }}
-                    />
+                    {result.snippet && (
+                      <div
+                        className="text-xs text-gray-600 mt-0.5 line-clamp-3 [&_mark]:bg-yellow-200 [&_mark]:rounded-sm"
+                        dangerouslySetInnerHTML={{ __html: result.snippet }}
+                      />
+                    )}
                   </button>
                 </li>
               ))}
             </ul>
           )}
         </>
-      )}
-
-      {/* Loading state when no results yet */}
-      {loading && !hasContentResults && !hasFileMatches && (
-        <div className="p-4 text-sm text-gray-500">Searching...</div>
       )}
 
       {/* Empty state */}

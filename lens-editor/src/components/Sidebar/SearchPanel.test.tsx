@@ -36,6 +36,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={mockResults}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query="test"
@@ -51,6 +52,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={mockResults}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query="test"
@@ -69,6 +71,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={mockResults}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query="test"
@@ -89,6 +92,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={mockResults}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query="test"
@@ -107,6 +111,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={[]}
+        fileNameMatches={[]}
         loading={true}
         error={null}
         query="test"
@@ -121,6 +126,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={[]}
+        fileNameMatches={[]}
         loading={false}
         error="Search failed: 500"
         query="test"
@@ -135,6 +141,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={[]}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query="nonexistent"
@@ -149,6 +156,7 @@ describe('SearchPanel', () => {
     const { container } = render(
       <SearchPanel
         results={[]}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query=""
@@ -171,6 +179,7 @@ describe('SearchPanel', () => {
     render(
       <SearchPanel
         results={resultsNoFolder}
+        fileNameMatches={[]}
         loading={false}
         error={null}
         query="test"
@@ -179,8 +188,8 @@ describe('SearchPanel', () => {
     );
 
     expect(screen.getByText('Orphan Doc')).toBeInTheDocument();
-    // No folder span should be rendered
-    const folderSpans = document.querySelectorAll('.text-gray-400');
+    // No folder span should be rendered (ignore section headers which also use text-gray-400)
+    const folderSpans = document.querySelectorAll('span.text-gray-400');
     expect(folderSpans.length).toBe(0);
   });
 });
