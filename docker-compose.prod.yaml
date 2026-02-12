@@ -45,6 +45,7 @@ services:
       - RELAY_URL=http://relay-server:8080
       - RELAY_SERVER_TOKEN=${RELAY_SERVER_TOKEN}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - SHARE_TOKEN_SECRET=${SHARE_TOKEN_SECRET}
       - PORT=3000
 
   relay-git-sync:
