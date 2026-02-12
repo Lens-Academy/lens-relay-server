@@ -1,7 +1,6 @@
 use crate::doc_sync::DocWithSyncKv;
 use crate::link_parser::{compute_wikilink_rename_edits, extract_wikilinks};
 use dashmap::DashMap;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -27,36 +26,6 @@ pub fn parse_doc_id(doc_id: &str) -> Option<(&str, &str)> {
         Some((relay_id, doc_uuid))
     } else {
         None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IndexingGuard — thread-local flag to prevent infinite loops
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    /// Flag to prevent infinite loop when indexer writes trigger observer
-    static INDEXING_IN_PROGRESS: RefCell<bool> = RefCell::new(false);
-}
-
-/// Check if we should index this update (not from our own write)
-pub fn should_index() -> bool {
-    INDEXING_IN_PROGRESS.with(|flag| !*flag.borrow())
-}
-
-/// Guard that sets flag during indexer writes. Automatically clears on Drop.
-pub struct IndexingGuard;
-
-impl IndexingGuard {
-    pub fn new() -> Self {
-        INDEXING_IN_PROGRESS.with(|flag| *flag.borrow_mut() = true);
-        Self
-    }
-}
-
-impl Drop for IndexingGuard {
-    fn drop(&mut self) {
-        INDEXING_IN_PROGRESS.with(|flag| *flag.borrow_mut() = false);
     }
 }
 
@@ -298,7 +267,6 @@ pub fn index_content_into_folders(
     let all_new_targets: HashSet<&str> = resolved.iter().map(|(u, _)| u.as_str()).collect();
 
     // 5. Diff-update backlinks_v0 on each folder doc
-    let _guard = IndexingGuard::new();
     for (fi, folder_doc) in folder_docs.iter().enumerate() {
         let new_targets = &targets_per_folder[fi];
         let mut txn = folder_doc.transact_mut_with("link-indexer");
@@ -354,8 +322,9 @@ pub fn index_content_into_folders(
 /// 1. Reads the plain text from Y.Text("contents")
 /// 2. Calls `compute_wikilink_rename_edits()` to find matching wikilinks
 /// 3. Applies edits in reverse order using `remove_range` / `insert`
-/// 4. Wraps the transaction in an `IndexingGuard` to prevent infinite loops
-/// 5. Returns the number of edits applied
+///    (uses `transact_mut_with("link-indexer")` so the observer can identify
+///    indexer-originated writes via the transaction origin)
+/// 4. Returns the number of edits applied
 ///
 /// Note: yrs defaults to `OffsetKind::Bytes` (UTF-8 byte offsets), which matches
 /// the byte offsets from `compute_wikilink_rename_edits()` directly — no conversion needed.
@@ -379,10 +348,7 @@ pub fn update_wikilinks_in_doc(
         return Ok(0);
     }
 
-    // 3-4. Apply edits inside an IndexingGuard
-    // Edits are in reverse offset order, so applying them back-to-front
-    // keeps earlier byte offsets valid.
-    let _guard = IndexingGuard::new();
+    // 3. Apply edits in reverse offset order so earlier byte offsets stay valid.
     let mut txn = content_doc.transact_mut_with("link-indexer");
     let text = txn.get_or_insert_text("contents");
 

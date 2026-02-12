@@ -50,7 +50,7 @@ impl DocWithSyncKv {
             let sync_kv = sync_kv.clone();
             let webhook_callback = webhook_callback.clone();
             let doc_key = key.to_string();
-            doc.observe_update_v1(move |_, event| {
+            doc.observe_update_v1(move |txn, event| {
                 sync_kv.push_update(DOC_NAME, &event.update).unwrap();
                 sync_kv
                     .flush_doc_with(DOC_NAME, Default::default())
@@ -58,13 +58,16 @@ impl DocWithSyncKv {
 
                 // Trigger webhook if callback is configured
                 if let Some(ref callback) = webhook_callback {
+                    let is_indexer = txn.origin()
+                        .map(|o| o.as_ref() == b"link-indexer")
+                        .unwrap_or(false);
                     // Create the event payload with business data, metadata, and update
                     let event = DocumentUpdatedEvent::new(doc_key.clone())
                         .with_metadata(&sync_kv)
                         .with_update(event.update.to_vec());
 
                     // Callback handles envelope creation and dispatch
-                    callback(event);
+                    callback(event, is_indexer);
                 }
             })
             .map_err(|_| anyhow!("Failed to subscribe to updates"))?

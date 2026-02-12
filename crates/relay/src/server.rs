@@ -709,7 +709,7 @@ impl Server {
             let doc_key_for_indexer = doc_id.to_string();
 
             if let Some(dispatcher) = event_dispatcher {
-                Some(Arc::new(move |mut event: DocumentUpdatedEvent| {
+                Some(Arc::new(move |mut event: DocumentUpdatedEvent, is_indexer: bool| {
                     // Add user to event if available
                     if let Some(ref user) = user_for_callback {
                         event.user = Some(user.clone());
@@ -735,7 +735,7 @@ impl Server {
                     dispatcher.send_event(envelope);
 
                     // Notify link indexer (if this update is not from the indexer itself)
-                    if y_sweet_core::link_indexer::should_index() {
+                    if !is_indexer {
                         if let Some(ref indexer) = link_indexer_for_callback {
                             let indexer = indexer.clone();
                             let doc_key = doc_key_for_indexer.clone();
@@ -760,8 +760,8 @@ impl Server {
                     let indexer = link_indexer_for_callback.clone();
                     let search_tx = search_tx_for_callback.clone();
                     let doc_key = doc_key_for_indexer.clone();
-                    Some(Arc::new(move |_event: DocumentUpdatedEvent| {
-                        if y_sweet_core::link_indexer::should_index() {
+                    Some(Arc::new(move |_event: DocumentUpdatedEvent, is_indexer: bool| {
+                        if !is_indexer {
                             if let Some(ref indexer) = indexer {
                                 let indexer = indexer.clone();
                                 let doc_key = doc_key.clone();
