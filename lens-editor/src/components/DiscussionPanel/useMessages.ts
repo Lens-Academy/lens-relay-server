@@ -36,7 +36,7 @@ interface UseMessagesResult {
 }
 
 /**
- * Hook: fetches messages from the discord-bridge proxy API.
+ * Hook: fetches messages from the discord proxy API.
  *
  * @param channelId - Discord channel ID to fetch, or null to disable
  */

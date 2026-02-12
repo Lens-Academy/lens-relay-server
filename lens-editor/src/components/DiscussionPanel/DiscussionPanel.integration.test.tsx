@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  *
- * Integration smoke tests that hit a running discord-bridge sidecar.
+ * Integration smoke tests that hit a running discord dev server (npm run discord:start).
  * Skipped unless DISCORD_BOT_TOKEN and DISCORD_TEST_CHANNEL_ID are set.
  */
 import { describe, it, expect } from 'vitest';
