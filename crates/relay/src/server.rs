@@ -500,9 +500,21 @@ impl Server {
         let docs_for_indexer = docs.clone();
         let indexer_for_worker = link_indexer.clone();
         tokio::spawn(async move {
-            indexer_for_worker
-                .run_worker(index_rx, docs_for_indexer)
-                .await;
+            let result = std::panic::AssertUnwindSafe(
+                indexer_for_worker.run_worker(index_rx, docs_for_indexer),
+            );
+            if let Err(e) = futures::FutureExt::catch_unwind(result).await {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic payload".to_string()
+                };
+                tracing::error!("CRITICAL: Link indexer worker panicked: {msg}. Backlink indexing is now dead — restart the server.");
+            } else {
+                tracing::error!("CRITICAL: Link indexer worker exited unexpectedly (channel closed). Backlink indexing is now dead.");
+            }
         });
 
         // Create SearchIndex with MmapDirectory in a temp directory
@@ -531,12 +543,26 @@ impl Server {
             let search_pending: Arc<DashMap<String, tokio::time::Instant>> =
                 Arc::new(DashMap::new());
 
-            tokio::spawn(search_worker(
-                search_rx,
-                si_for_worker,
-                docs_for_search,
-                search_pending,
-            ));
+            tokio::spawn(async move {
+                let result = std::panic::AssertUnwindSafe(search_worker(
+                    search_rx,
+                    si_for_worker,
+                    docs_for_search,
+                    search_pending,
+                ));
+                if let Err(e) = futures::FutureExt::catch_unwind(result).await {
+                    let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic payload".to_string()
+                    };
+                    tracing::error!("CRITICAL: Search index worker panicked: {msg}. Search indexing is now dead — restart the server.");
+                } else {
+                    tracing::error!("CRITICAL: Search index worker exited unexpectedly (channel closed). Search indexing is now dead.");
+                }
+            });
 
             Some(search_tx)
         } else {
@@ -720,7 +746,9 @@ impl Server {
 
                         // Notify search index worker
                         if let Some(ref tx) = search_tx_for_callback {
-                            let _ = tx.try_send(doc_key_for_indexer.clone());
+                            if let Err(e) = tx.try_send(doc_key_for_indexer.clone()) {
+                                tracing::error!("Search index channel send failed (worker dead?): {e}");
+                            }
                         }
                     }
                 }) as y_sweet_core::webhook::WebhookCallback)
@@ -744,7 +772,9 @@ impl Server {
 
                             // Notify search index worker
                             if let Some(ref tx) = search_tx {
-                                let _ = tx.try_send(doc_key.clone());
+                                if let Err(e) = tx.try_send(doc_key.clone()) {
+                                    tracing::error!("Search index channel send failed (worker dead?): {e}");
+                                }
                             }
                         }
                     }) as y_sweet_core::webhook::WebhookCallback)

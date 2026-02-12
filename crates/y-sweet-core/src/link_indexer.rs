@@ -435,7 +435,12 @@ impl LinkIndexer {
         // Only send to channel on the first update — subsequent updates just
         // reset the timestamp for debouncing without flooding the channel.
         if !already_pending {
-            let _ = self.index_tx.send(doc_id.to_string()).await;
+            if let Err(e) = self.index_tx.send(doc_id.to_string()).await {
+                tracing::error!(
+                    "Link indexer channel send failed (receiver dropped — worker dead?): {}",
+                    e
+                );
+            }
         }
     }
 
@@ -587,7 +592,7 @@ impl LinkIndexer {
                 };
 
                 let awareness = content_ref.awareness();
-                let guard = awareness.read().unwrap();
+                let guard = awareness.write().unwrap();
                 match update_wikilinks_in_doc(&guard.doc, &rename.old_name, &rename.new_name) {
                     Ok(count) => {
                         tracing::info!(
@@ -732,9 +737,12 @@ impl LinkIndexer {
             .iter()
             .map(|r| r.awareness())
             .collect();
+        // SAFETY: We acquire write locks on ALL folder docs simultaneously.
+        // This is safe because run_worker processes docs sequentially (single loop iteration).
+        // Do NOT parallelize index_document calls without introducing lock ordering.
         let folder_guards: Vec<_> = folder_awarnesses
             .iter()
-            .map(|a| a.read().unwrap())
+            .map(|a| a.write().unwrap())
             .collect();
         let folder_doc_refs: Vec<&Doc> = folder_guards
             .iter()
