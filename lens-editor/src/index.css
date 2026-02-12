@@ -188,6 +188,18 @@
   text-decoration: line-through;
 }
 
+/* Colored left border for blank/hidden lines within suggestions.
+   min-height ensures cursor remains visible on lines with only font-size:0 content. */
+.cm-addition-line {
+  border-left: 3px solid rgba(34, 197, 94, 0.6);
+  min-height: 1.5em;
+}
+
+.cm-deletion-line {
+  border-left: 3px solid rgba(239, 68, 68, 0.6);
+  min-height: 1.5em;
+}
+
 .cm-substitution {
   background-color: rgba(234, 179, 8, 0.2); /* yellow-500 with opacity */
 }

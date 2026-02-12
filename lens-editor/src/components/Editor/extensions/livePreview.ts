@@ -377,6 +377,56 @@ export function updateWikilinkContext(context: WikilinkContext | undefined) {
 }
 
 /**
+ * Source-mode heading plugin — applies heading size classes
+ * but keeps # markers visible (no hidden-syntax decorations).
+ */
+const sourceHeadingPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = this.buildDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = this.buildDecorations(update.view);
+      }
+    }
+
+    buildDecorations(view: EditorView): DecorationSet {
+      const builder = new RangeSetBuilder<Decoration>();
+      const decorations: Array<{ from: number; to: number; deco: Decoration }> = [];
+
+      for (const { from, to } of view.visibleRanges) {
+        syntaxTree(view.state).iterate({
+          from,
+          to,
+          enter(node) {
+            if (node.name in HEADING_CLASSES) {
+              decorations.push({
+                from: node.from,
+                to: node.to,
+                deco: Decoration.mark({ class: HEADING_CLASSES[node.name] }),
+              });
+            }
+          },
+        });
+      }
+
+      decorations.sort((a, b) => a.from - b.from || a.to - b.to);
+      for (const d of decorations) {
+        builder.add(d.from, d.to, d.deco);
+      }
+      return builder.finish();
+    }
+  },
+  {
+    decorations: (v) => v.decorations,
+  }
+);
+
+/**
  * Toggle between live preview mode and source mode
  * @param view - The EditorView instance
  * @param sourceMode - true to show source (raw markdown), false for live preview
@@ -385,7 +435,7 @@ export function toggleSourceMode(view: EditorView, sourceMode: boolean) {
   view.dispatch({
     effects: [
       livePreviewCompartment.reconfigure(
-        sourceMode ? [] : [livePreviewPlugin, livePreviewTheme]
+        sourceMode ? [sourceHeadingPlugin, livePreviewTheme] : [livePreviewPlugin, livePreviewTheme]
       ),
       criticMarkupCompartment.reconfigure(
         sourceMode ? criticMarkupSourcePlugin : criticMarkupPlugin

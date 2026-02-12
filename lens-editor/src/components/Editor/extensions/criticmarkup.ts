@@ -47,6 +47,12 @@ const TYPE_CLASSES: Record<CriticMarkupRange['type'], string> = {
   highlight: 'cm-highlight',
 };
 
+// Line-level CSS classes for blank lines within suggestions
+const LINE_CLASSES: Partial<Record<CriticMarkupRange['type'], string>> = {
+  addition: 'cm-addition-line',
+  deletion: 'cm-deletion-line',
+};
+
 /**
  * StateEffect to toggle suggestion mode on/off.
  */
@@ -93,6 +99,23 @@ function selectionIntersects(
   to: number
 ): boolean {
   return selection.ranges.some((range) => range.to >= from && range.from <= to);
+}
+
+/**
+ * Widget that renders a zero-width space to give hidden-syntax-only lines
+ * a proper line height so the cursor remains visible.
+ */
+class CursorAnchorWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    span.textContent = '\u200B'; // zero-width space
+    span.className = 'cm-cursor-anchor';
+    return span;
+  }
+
+  eq(): boolean {
+    return true; // All instances are equivalent
+  }
 }
 
 /**
@@ -184,6 +207,8 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
 
       // Collect all decorations to sort before adding
       const decorations: Array<{ from: number; to: number; deco: Decoration }> = [];
+      // Line decorations are added separately (must not be mixed into mark sort)
+      const lineDecos: Array<{ from: number; deco: Decoration }> = [];
 
       for (const range of ranges) {
         const className = TYPE_CLASSES[range.type];
@@ -211,7 +236,29 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
           deco: Decoration.mark({ class: 'cm-hidden-syntax' }),
         });
 
-        // When cursor is inside, also show accept/reject buttons
+        // Add colored left border on lines within additions/deletions that have
+        // no visible content (blank lines, or lines where all text is hidden syntax)
+        const lineClass = LINE_CLASSES[range.type];
+        if (lineClass) {
+          const doc = view.state.doc;
+          // Iterate ALL lines in the markup range (including delimiter lines)
+          const startLine = doc.lineAt(range.from).number;
+          const endLine = doc.lineAt(range.to).number;
+          for (let ln = startLine; ln <= endLine; ln++) {
+            const line = doc.line(ln);
+            // Check if this line has any visible suggestion content
+            const visibleFrom = Math.max(line.from, range.contentFrom);
+            const visibleTo = Math.min(line.to, range.contentTo);
+            if (visibleFrom >= visibleTo || doc.sliceString(visibleFrom, visibleTo).trim() === '') {
+              lineDecos.push({
+                from: line.from,
+                deco: Decoration.line({ class: lineClass }),
+              });
+            }
+          }
+        }
+
+        // When cursor is inside, show accept/reject buttons and ensure cursor visibility
         if (cursorInside) {
           decorations.push({
             from: range.contentTo,
@@ -221,18 +268,40 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
               side: 1, // After the content
             }),
           });
+
+          // If cursor is on a line where all text is hidden syntax (delimiter lines),
+          // add a zero-width space widget so the cursor has proper height
+          const cursorHead = view.state.selection.main.head;
+          const cursorLine = view.state.doc.lineAt(cursorHead);
+          const visFrom = Math.max(cursorLine.from, range.contentFrom);
+          const visTo = Math.min(cursorLine.to, range.contentTo);
+          const lineIsAllHidden = visFrom >= visTo || view.state.doc.sliceString(visFrom, visTo).trim() === '';
+          if (lineIsAllHidden && cursorHead >= range.from && cursorHead <= range.to) {
+            decorations.push({
+              from: cursorHead,
+              to: cursorHead,
+              deco: Decoration.widget({
+                widget: new CursorAnchorWidget(),
+                side: 0,
+              }),
+            });
+          }
         }
       }
 
-      // Sort by position (required for RangeSetBuilder)
-      // Widgets (from === to) should come after marks at the same position
+      // Merge line decorations into the main array
+      for (const ld of lineDecos) {
+        decorations.push({ from: ld.from, to: ld.from, deco: ld.deco });
+      }
+
+      // Sort by position and startSide (required for RangeSetBuilder)
+      // Line decos have startSide -200, marks -1, widgets vary
       decorations.sort((a, b) => {
         if (a.from !== b.from) return a.from - b.from;
-        if (a.to !== b.to) return a.to - b.to;
-        const aIsWidget = a.from === a.to;
-        const bIsWidget = b.from === b.to;
-        if (aIsWidget !== bIsWidget) return aIsWidget ? 1 : -1;
-        return 0;
+        const aSide = (a.deco as any).startSide ?? 0;
+        const bSide = (b.deco as any).startSide ?? 0;
+        if (aSide !== bSide) return aSide - bSide;
+        return a.to - b.to;
       });
 
       for (const d of decorations) {
@@ -250,6 +319,7 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
 /**
  * ViewPlugin for source mode - applies color classes to entire CriticMarkup ranges
  * without hiding any syntax. Shows raw markup with color coding.
+ * Accept/reject buttons appear when cursor is inside a range.
  */
 export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
   class {
@@ -257,10 +327,24 @@ export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
 
     constructor(view: EditorView) {
       this.decorations = this.buildDecorations(view);
+
+      // Event delegation for accept/reject button clicks
+      view.contentDOM.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.classList.contains('cm-criticmarkup-accept')) {
+          e.preventDefault();
+          e.stopPropagation();
+          acceptChangeAtCursor(view);
+        } else if (target.classList.contains('cm-criticmarkup-reject')) {
+          e.preventDefault();
+          e.stopPropagation();
+          rejectChangeAtCursor(view);
+        }
+      });
     }
 
     update(update: ViewUpdate) {
-      if (update.docChanged) {
+      if (update.docChanged || update.selectionSet) {
         this.decorations = this.buildDecorations(update.view);
       }
     }
@@ -268,13 +352,40 @@ export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
     buildDecorations(view: EditorView): DecorationSet {
       const builder = new RangeSetBuilder<Decoration>();
       const ranges = view.state.field(criticMarkupField);
+      const selection = view.state.selection;
+
+      const decorations: Array<{ from: number; to: number; deco: Decoration }> = [];
 
       for (const range of ranges) {
-        builder.add(
-          range.from,
-          range.to,
-          Decoration.mark({ class: TYPE_CLASSES[range.type] })
-        );
+        decorations.push({
+          from: range.from,
+          to: range.to,
+          deco: Decoration.mark({ class: TYPE_CLASSES[range.type] }),
+        });
+
+        if (selectionIntersects(selection, range.from, range.to)) {
+          decorations.push({
+            from: range.contentTo,
+            to: range.contentTo,
+            deco: Decoration.widget({
+              widget: new AcceptRejectWidget(range.from, range.to),
+              side: 1,
+            }),
+          });
+        }
+      }
+
+      decorations.sort((a, b) => {
+        if (a.from !== b.from) return a.from - b.from;
+        if (a.to !== b.to) return a.to - b.to;
+        const aIsWidget = a.from === a.to;
+        const bIsWidget = b.from === b.to;
+        if (aIsWidget !== bIsWidget) return aIsWidget ? 1 : -1;
+        return 0;
+      });
+
+      for (const d of decorations) {
+        builder.add(d.from, d.to, d.deco);
       }
 
       return builder.finish();
@@ -320,10 +431,87 @@ const suggestionModeFilter = EditorState.transactionFilter.of((tr: Transaction) 
     return tr;
   }
 
+  // Check if cursor is inside an existing deletion by the same author
+  const ownDeletion = ranges.find(
+    (r) =>
+      r.type === 'deletion' &&
+      r.metadata?.author === currentAuthor &&
+      cursorPos > r.from &&
+      cursorPos < r.to
+  );
+
+  if (ownDeletion) {
+    // Intercept edits inside own deletion to extend it
+    const extChanges: ChangeSpec[] = [];
+    let extCursorPos: number | undefined;
+
+    tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+      const deleted = tr.startState.doc.sliceString(fromA, toA);
+      const added = inserted.toString();
+
+      if (deleted && !added) {
+        const isForwardDelete = fromA >= cursorPos;
+
+        if (!isForwardDelete && ownDeletion.from > 0) {
+          // Backspace: grab text from before the block and prepend to content
+          const grabLen = Math.min(toA - fromA, ownDeletion.from);
+          const grabbed = tr.startState.doc.sliceString(
+            ownDeletion.from - grabLen,
+            ownDeletion.from
+          );
+          extChanges.push({ from: ownDeletion.from - grabLen, to: ownDeletion.from, insert: '' });
+          extChanges.push({
+            from: ownDeletion.contentFrom,
+            to: ownDeletion.contentFrom,
+            insert: grabbed,
+          });
+          extCursorPos = ownDeletion.contentFrom - grabLen;
+        } else if (isForwardDelete && ownDeletion.to < tr.startState.doc.length) {
+          // Forward delete: grab text from after the block and append to content
+          const grabLen = Math.min(
+            toA - fromA,
+            tr.startState.doc.length - ownDeletion.to
+          );
+          const grabbed = tr.startState.doc.sliceString(
+            ownDeletion.to,
+            ownDeletion.to + grabLen
+          );
+          extChanges.push({
+            from: ownDeletion.contentTo,
+            to: ownDeletion.contentTo,
+            insert: grabbed,
+          });
+          extChanges.push({ from: ownDeletion.to, to: ownDeletion.to + grabLen, insert: '' });
+          // Cursor to the RIGHT of the appended char
+          extCursorPos = ownDeletion.contentTo + grabLen;
+        }
+      } else if (added && !deleted) {
+        // Typing inside deletion: create addition before the deletion block
+        const ts = Date.now();
+        const addMeta = JSON.stringify({ author: currentAuthor, timestamp: ts });
+        const ins = `{++${addMeta}@@${added}++}`;
+        extChanges.push({ from: ownDeletion.from, to: ownDeletion.from, insert: ins });
+        extCursorPos = ownDeletion.from + ins.length - 3;
+      }
+    });
+
+    if (extChanges.length > 0) {
+      return {
+        changes: extChanges,
+        selection: extCursorPos !== undefined
+          ? EditorSelection.cursor(extCursorPos)
+          : tr.selection,
+        effects: tr.effects,
+      };
+    }
+    // Fall through for unhandled cases
+  }
+
   const timestamp = Date.now();
   const meta = JSON.stringify({ author: currentAuthor, timestamp });
 
   const newChanges: ChangeSpec[] = [];
+  let newCursorPos: number | undefined;
 
   tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
     const deleted = tr.startState.doc.sliceString(fromA, toA);
@@ -337,12 +525,59 @@ const suggestionModeFilter = EditorState.transactionFilter.of((tr: Transaction) 
         insert: `{~~${meta}@@${deleted}~>${added}~~}`,
       });
     } else if (deleted) {
-      // Pure deletion
-      newChanges.push({
-        from: fromA,
-        to: toA,
-        insert: `{--${meta}@@${deleted}--}`,
-      });
+      // Check for adjacent own deletion to extend (sequential backspace)
+      const adjacentAfter = ranges.find(
+        (r) =>
+          r.type === 'deletion' &&
+          r.metadata?.author === currentAuthor &&
+          toA === r.from
+      );
+
+      if (adjacentAfter) {
+        // Extend existing deletion by prepending deleted text
+        newChanges.push({ from: fromA, to: toA, insert: '' });
+        newChanges.push({
+          from: adjacentAfter.contentFrom,
+          to: adjacentAfter.contentFrom,
+          insert: deleted,
+        });
+        // Cursor inside content (contentFrom shifted left by deleted chars)
+        newCursorPos = adjacentAfter.contentFrom - deleted.length;
+      } else {
+        // Check for adjacent own deletion before (sequential forward-delete)
+        const adjacentBefore = ranges.find(
+          (r) =>
+            r.type === 'deletion' &&
+            r.metadata?.author === currentAuthor &&
+            fromA === r.to
+        );
+
+        if (adjacentBefore) {
+          // Extend existing deletion by appending deleted text
+          newChanges.push({
+            from: adjacentBefore.contentTo,
+            to: adjacentBefore.contentTo,
+            insert: deleted,
+          });
+          newChanges.push({ from: fromA, to: toA, insert: '' });
+          // Cursor to the RIGHT of the appended char
+          newCursorPos = adjacentBefore.contentTo + deleted.length;
+        } else {
+          // New deletion wrapper
+          const delInsert = `{--${meta}@@${deleted}--}`;
+          newChanges.push({
+            from: fromA,
+            to: toA,
+            insert: delInsert,
+          });
+          // Position cursor inside the deletion content
+          const contentStart = fromA + delInsert.indexOf('@@') + 2;
+          const isForwardDel = cursorPos <= fromA;
+          newCursorPos = isForwardDel
+            ? contentStart + deleted.length  // RIGHT of deleted text
+            : contentStart;                  // LEFT of deleted text
+        }
+      }
     } else if (added) {
       // Pure insertion
       newChanges.push({
@@ -350,21 +585,16 @@ const suggestionModeFilter = EditorState.transactionFilter.of((tr: Transaction) 
         to: fromA,
         insert: `{++${meta}@@${added}++}`,
       });
+      // Position cursor before ++} (inside the addition content)
+      const change = newChanges[newChanges.length - 1] as {
+        from: number;
+        insert: string;
+      };
+      newCursorPos = change.from + change.insert.length - 3;
     }
   });
 
   if (newChanges.length === 0) return tr;
-
-  // Calculate new cursor position: inside the wrapped content
-  // For additions, cursor should be before ++} (end of insert minus 3)
-  let newCursorPos: number | undefined;
-  if (newChanges.length === 1) {
-    const change = newChanges[0] as { from: number; to?: number; insert: string };
-    if (change.insert.startsWith('{++')) {
-      // Position cursor before ++} (end of insert minus 3)
-      newCursorPos = change.from + change.insert.length - 3;
-    }
-  }
 
   return {
     changes: newChanges,
