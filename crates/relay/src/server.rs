@@ -16,7 +16,7 @@ use axum::{
     Json, Router,
 };
 use axum_extra::typed_header::TypedHeader;
-use dashmap::{mapref::one::MappedRef, DashMap};
+use dashmap::{mapref::entry::Entry, mapref::one::MappedRef, DashMap};
 use futures::{SinkExt, StreamExt, TryStreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -215,6 +215,11 @@ async fn search_worker(
                         } else {
                             break;
                         }
+                    }
+
+                    // Skip if entry was removed while we waited
+                    if !pending.contains_key(&doc_id) {
+                        continue;
                     }
                 }
 
@@ -432,6 +437,7 @@ pub struct Server {
     search_index: Option<Arc<SearchIndex>>,
     search_ready: Arc<std::sync::atomic::AtomicBool>,
     search_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    search_pending: Option<Arc<DashMap<String, tokio::time::Instant>>>,
     doc_resolver: Arc<DocumentResolver>,
     pub(crate) mcp_sessions: Arc<crate::mcp::session::SessionManager>,
     mcp_api_key: Option<String>,
@@ -532,12 +538,13 @@ impl Server {
         let search_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // Spawn background worker for search index updates
-        let search_tx_final = if let Some(ref si) = search_index {
+        let (search_tx_final, search_pending_final) = if let Some(ref si) = search_index {
             let (search_tx, search_rx) = tokio::sync::mpsc::channel::<String>(1000);
             let si_for_worker = si.clone();
             let docs_for_search = docs.clone();
             let search_pending: Arc<DashMap<String, tokio::time::Instant>> =
                 Arc::new(DashMap::new());
+            let search_pending_for_struct = search_pending.clone();
 
             tokio::spawn(async move {
                 let result = std::panic::AssertUnwindSafe(search_worker(
@@ -560,9 +567,9 @@ impl Server {
                 }
             });
 
-            Some(search_tx)
+            (Some(search_tx), Some(search_pending_for_struct))
         } else {
-            None
+            (None, None)
         };
 
         let mcp_api_key = std::env::var("MCP_API_KEY").ok();
@@ -589,6 +596,7 @@ impl Server {
             search_index,
             search_ready,
             search_tx: search_tx_final,
+            search_pending: search_pending_final,
             doc_resolver,
             mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
             mcp_api_key,
@@ -627,6 +635,7 @@ impl Server {
             search_index: None,
             search_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             search_tx: None,
+            search_pending: None,
             doc_resolver: Arc::new(DocumentResolver::new()),
             mcp_sessions: Arc::new(crate::mcp::session::SessionManager::new()),
             mcp_api_key: None,
@@ -702,6 +711,7 @@ impl Server {
             let user_for_callback = user.clone();
             let link_indexer_for_callback = self.link_indexer.clone();
             let search_tx_for_callback = self.search_tx.clone();
+            let search_pending_for_callback = self.search_pending.clone();
             let doc_key_for_indexer = doc_id.to_string();
 
             if let Some(dispatcher) = event_dispatcher {
@@ -740,10 +750,24 @@ impl Server {
                             });
                         }
 
-                        // Notify search index worker
+                        // Notify search index worker (with deduplication)
                         if let Some(ref tx) = search_tx_for_callback {
-                            if let Err(e) = tx.try_send(doc_key_for_indexer.clone()) {
-                                tracing::error!("Search index channel send failed (worker dead?): {e}");
+                            if let Some(ref pending) = search_pending_for_callback {
+                                let is_new = match pending.entry(doc_key_for_indexer.clone()) {
+                                    Entry::Occupied(mut e) => {
+                                        e.insert(tokio::time::Instant::now());
+                                        false
+                                    }
+                                    Entry::Vacant(e) => {
+                                        e.insert(tokio::time::Instant::now());
+                                        true
+                                    }
+                                };
+                                if is_new {
+                                    if let Err(e) = tx.try_send(doc_key_for_indexer.clone()) {
+                                        tracing::error!("Search index channel send failed (worker dead?): {e}");
+                                    }
+                                }
                             }
                         }
                     }
@@ -755,6 +779,7 @@ impl Server {
                 if has_indexer || has_search {
                     let indexer = link_indexer_for_callback.clone();
                     let search_tx = search_tx_for_callback.clone();
+                    let search_pending = search_pending_for_callback.clone();
                     let doc_key = doc_key_for_indexer.clone();
                     Some(Arc::new(move |_event: DocumentUpdatedEvent, is_indexer: bool| {
                         if !is_indexer {
@@ -766,10 +791,24 @@ impl Server {
                                 });
                             }
 
-                            // Notify search index worker
+                            // Notify search index worker (with deduplication)
                             if let Some(ref tx) = search_tx {
-                                if let Err(e) = tx.try_send(doc_key.clone()) {
-                                    tracing::error!("Search index channel send failed (worker dead?): {e}");
+                                if let Some(ref pending) = search_pending {
+                                    let is_new = match pending.entry(doc_key.clone()) {
+                                        Entry::Occupied(mut e) => {
+                                            e.insert(tokio::time::Instant::now());
+                                            false
+                                        }
+                                        Entry::Vacant(e) => {
+                                            e.insert(tokio::time::Instant::now());
+                                            true
+                                        }
+                                    };
+                                    if is_new {
+                                        if let Err(e) = tx.try_send(doc_key.clone()) {
+                                            tracing::error!("Search index channel send failed (worker dead?): {e}");
+                                        }
+                                    }
                                 }
                             }
                         }
