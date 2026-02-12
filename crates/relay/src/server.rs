@@ -984,7 +984,7 @@ impl Server {
                     }
                 }
 
-                match search_index.add_document(uuid, title, &body, folder_name) {
+                match search_index.add_document_buffered(uuid, title, &body, folder_name) {
                     Ok(()) => indexed += 1,
                     Err(e) => {
                         tracing::error!(
@@ -996,6 +996,9 @@ impl Server {
                 }
             }
 
+            if let Err(e) = search_index.flush() {
+                tracing::error!("Failed to flush search index: {}", e);
+            }
             tracing::info!("Search index built: {} documents indexed", indexed);
         }
 

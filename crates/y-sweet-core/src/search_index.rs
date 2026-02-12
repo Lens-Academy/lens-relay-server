@@ -141,6 +141,34 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Add a document without committing. Call `flush()` after a batch.
+    pub fn add_document_buffered(
+        &self,
+        doc_id: &str,
+        title: &str,
+        body: &str,
+        folder: &str,
+    ) -> Result<()> {
+        let mut writer = self.writer.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let term = Term::from_field_text(self.doc_id_field, doc_id);
+        writer.delete_term(term);
+        writer.add_document(doc!(
+            self.doc_id_field => doc_id,
+            self.title_field => title,
+            self.body_field => body,
+            self.folder_field => folder,
+        ))?;
+        Ok(())
+    }
+
+    /// Commit buffered changes and reload the reader.
+    pub fn flush(&self) -> Result<()> {
+        let mut writer = self.writer.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
+    }
+
     /// Search the index and return ranked results with snippets.
     ///
     /// Returns an empty Vec for empty or whitespace-only queries.
