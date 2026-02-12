@@ -2,7 +2,7 @@
 
 **Goal:** Eliminate the three most critical crash vectors found in the relay server's fork-specific code: a panicking dirty callback, RwLock poison cascades, and a non-functional search debounce.
 
-**Architecture:** Three independent fixes. Task 1 is a 1-line fix. Task 2 is a mechanical replacement across 7 files (25 sites). Task 3 is a structural change to the search worker's debounce plumbing.
+**Architecture:** Three independent fixes. Task 1 is a 1-line fix. Task 2 is a mechanical replacement across 8 files (25 sites). Task 3 is a structural change to the search worker's debounce plumbing.
 
 **Tech Stack:** Rust, yrs/y-sweet-core, tokio, DashMap
 

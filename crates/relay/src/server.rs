@@ -400,6 +400,9 @@ async fn search_handle_folder_update(
                 if docs.contains_key(&content_id) {
                     pending.insert(content_id.clone(), tokio::time::Instant::now());
                     search_handle_content_update(&content_id, docs, search_index);
+                    // Remove pending entry so future edits trigger normal callback -> worker flow.
+                    // Without this, the callback's Entry::Occupied dedup suppresses all future sends.
+                    pending.remove(&content_id);
                 }
             }
         }
