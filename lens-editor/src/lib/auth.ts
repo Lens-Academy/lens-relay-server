@@ -1,3 +1,5 @@
+import { loadTimer } from './load-timing';
+
 export interface ClientToken {
   url: string;
   baseUrl: string;
@@ -54,6 +56,9 @@ export async function getClientToken(docId: string): Promise<ClientToken> {
     throw new Error('No share token — access denied');
   }
 
+  const isTracked = docId === loadTimer.activeDocId;
+  if (isTracked) loadTimer.mark('auth-start');
+
   const response = await fetch('/api/auth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,5 +74,8 @@ export async function getClientToken(docId: string): Promise<ClientToken> {
   const token = data.clientToken as ClientToken;
   token.url = rewriteRelayUrl(token.url);
   token.baseUrl = rewriteRelayBaseUrl(token.baseUrl);
+
+  if (isTracked) loadTimer.mark('auth-end');
+
   return token;
 }

@@ -13,6 +13,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import type { UserRole } from './contexts/AuthContext';
 import { getShareTokenFromUrl, stripShareTokenFromUrl, decodeRoleFromToken } from './lib/auth-share';
 import { setShareToken } from './lib/auth';
+import { loadTimer } from './lib/load-timing';
 
 // VITE_LOCAL_RELAY=true routes requests to a local relay-server via Vite proxy
 const USE_LOCAL_RELAY = import.meta.env.VITE_LOCAL_RELAY === 'true';
@@ -61,7 +62,15 @@ function AccessDenied() {
 }
 
 export function App() {
-  const [activeDocId, setActiveDocId] = useState<string>(DEFAULT_DOC_ID);
+  const [activeDocId, setActiveDocId] = useState<string>(() => {
+    loadTimer.start(DEFAULT_DOC_ID);
+    return DEFAULT_DOC_ID;
+  });
+
+  const handleNavigate = (docId: string) => {
+    loadTimer.start(docId);
+    setActiveDocId(docId);
+  };
 
   // No valid token → show access denied
   if (!shareToken || !shareRole) {
@@ -76,7 +85,7 @@ export function App() {
     <AuthProvider role={shareRole}>
       <DisplayNameProvider>
         <DisplayNamePrompt />
-        <NavigationContext.Provider value={{ metadata, folderDocs, folderNames, errors, onNavigate: setActiveDocId }}>
+        <NavigationContext.Provider value={{ metadata, folderDocs, folderNames, errors, onNavigate: handleNavigate }}>
           <div className="h-screen flex flex-col bg-gray-50">
             {/* Global identity bar */}
             <div className="flex items-center justify-end px-4 py-1 bg-white border-b border-gray-100">
@@ -84,7 +93,7 @@ export function App() {
             </div>
             <div className="flex-1 flex min-h-0">
               {/* Sidebar is OUTSIDE the key boundary - stays mounted across document switches */}
-              <Sidebar activeDocId={activeDocId} onSelectDocument={setActiveDocId} />
+              <Sidebar activeDocId={activeDocId} onSelectDocument={handleNavigate} />
 
               {/* Only EditorArea remounts on doc change via key prop */}
               <RelayProvider key={activeDocId} docId={activeDocId}>

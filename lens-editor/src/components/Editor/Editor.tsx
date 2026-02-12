@@ -20,7 +20,8 @@ import { WikilinkExtension } from './extensions/wikilinkParser';
 import { indentMore, indentLess } from '@codemirror/commands';
 import { yCollab } from 'y-codemirror.next';
 import * as Y from 'yjs';
-import { useYDoc, useYjsProvider } from '@y-sweet/react'
+import { useYDoc, useYjsProvider } from '@y-sweet/react';
+import { loadTimer } from '../../lib/load-timing';
 import { livePreview, updateWikilinkContext } from './extensions/livePreview';
 import type { WikilinkContext } from './extensions/livePreview';
 import { wikilinkAutocomplete } from './extensions/wikilinkAutocomplete';
@@ -163,10 +164,14 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, metad
   useEffect(() => {
     if ((provider as any).synced) {
       setSynced(true);
+      loadTimer.finish('editor-synced (already)');
       return;
     }
 
-    const handleSynced = () => setSynced(true);
+    const handleSynced = () => {
+      setSynced(true);
+      loadTimer.finish('editor-synced');
+    };
     provider.on('synced', handleSynced);
 
     return () => {
@@ -177,6 +182,7 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, metad
   // Create editor - must happen before sync so yCollab binds initial content
   useEffect(() => {
     if (!containerRef.current || viewRef.current) return;
+    loadTimer.mark('editor-create');
 
     // Get Y.Text for the editor content
     // Field name 'contents' matches Obsidian Relay document format
@@ -270,6 +276,7 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, metad
     });
 
     viewRef.current = view;
+    loadTimer.mark('editor-ready');
 
     // Notify parent that editor is ready
     if (onEditorReady) {
