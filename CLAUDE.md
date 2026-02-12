@@ -10,15 +10,20 @@ Fork of [No-Instructions/relay-server](https://github.com/No-Instructions/relay-
                     │ (lens-relay-storage) │
                     └────────┬────────────┘
                              │
-Internet ── Cloudflare ── cloudflared ── relay-server (Rust, port 8080)
-               Tunnel                        │
-                                             │ webhooks
-                                             ▼
-                                       relay-git-sync
-                                        │         │
-                                        ▼         ▼
-                                   lens-relay  lens-edu-relay
-                                   (GitHub)    (GitHub)
+Internet ── Cloudflare ── cloudflared ─┬─ relay-server (Rust, port 8080)
+               Tunnel                  │       │
+                                       │       │ webhooks
+                                       │       ▼
+                                       │  relay-git-sync
+                                       │   │         │
+                                       │   ▼         ▼
+                                       │ lens-relay  lens-edu-relay
+                                       │ (GitHub)    (GitHub)
+                                       │
+                                       └─ lens-editor (Node, port 3000)
+                                              │
+                                              ├─ Static frontend (React + CodeMirror)
+                                              └─ Discord API proxy ── Discord API
 
 Clients:
   - Obsidian + Relay.md plugin (real-time collaborative editing)
@@ -42,7 +47,7 @@ docs/                 # Operational documentation
 | Component | Location | Description |
 |-----------|----------|-------------|
 | **relay-server** | `crates/` | Rust-based CRDT sync server (y-sweet). Custom HMAC auth fixes for service accounts. |
-| **lens-editor** | `lens-editor/` | Web-based editor for relay documents. React + CodeMirror + yjs. Connects to relay-server via WebSocket. |
+| **lens-editor** | `lens-editor/` | Web-based editor for relay documents. React + CodeMirror + yjs. Connects to relay-server via WebSocket. Includes Discord API proxy bridge (Express backend). |
 | **relay-git-sync** | External: `No-Instructions/relay-git-sync` | Syncs relay shared folders to GitHub repos via webhooks. Runs as Docker container on production server. |
 | **Relay.md plugin** | External: `No-Instructions/Relay` | Obsidian plugin for real-time collaboration via relay-server. |
 
@@ -56,19 +61,16 @@ docs/                 # Operational documentation
 
 ## Running relay-server
 
-### With Docker (production-like)
+### With Docker (production)
+
+Production uses `docker-compose.prod.yaml` to manage all services (relay-server, lens-editor, cloudflared, relay-git-sync):
 
 ```bash
-docker build -t relay-server:custom -f crates/Dockerfile crates/
-docker run -d \
-  --name relay-server \
-  --restart unless-stopped \
-  --network relay-network \
-  --ulimit nofile=65536:524288 \
-  -v /root/relay.toml:/app/relay.toml:ro \
-  --env-file /root/auth.env \
-  relay-server:custom
+docker compose -f docker-compose.prod.yaml build
+docker compose -f docker-compose.prod.yaml up -d
 ```
+
+See `.env.example` for required environment variables and `docs/server-ops.md` for full operational details.
 
 ### With Cargo (local dev)
 

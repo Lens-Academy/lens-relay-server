@@ -27,7 +27,7 @@ Internet → Cloudflare (HTTPS/443) ← cloudflared (outbound tunnel) → relay-
 1. **cloudflared** — Cloudflare Tunnel connector
    - Image: `cloudflare/cloudflared:latest`
    - Routes `relay.lensacademy.org` to `relay-server:8080`
-   - Network: `relay-network`
+   - Network: default compose network
 
 2. **relay-server** — Main relay server (customized)
    - Image: `relay-server:custom` (built from modified source)
@@ -35,14 +35,20 @@ Internet → Cloudflare (HTTPS/443) ← cloudflared (outbound tunnel) → relay-
    - Config: `/root/relay.toml`
    - Credentials: `/root/auth.env` (R2 access keys)
    - Storage: Cloudflare R2 bucket `lens-relay-storage`
-   - Network: `relay-network`
+   - Network: default compose network
 
 3. **relay-git-sync** — Git synchronization service
    - Image: `docker.system3.md/relay-git-sync:latest` (with patched persistence.py)
    - Port: 8000 (internal only, receives webhooks from relay-server)
    - Config: `/root/relay-git-sync-data/git_connectors.toml`
    - Data: `/root/relay-git-sync-data/`
-   - Network: `relay-network`
+   - Network: default compose network
+
+4. **lens-editor** — Web editor frontend + Discord bridge
+   - Image: `lens-editor:custom` (built from lens-editor/)
+   - Port: 3000 (internal, accessed via cloudflared)
+   - Includes Discord API proxy (merged from discord-bridge sidecar)
+   - Network: default compose network
 
 ## Cloudflare R2 Storage
 
@@ -259,51 +265,21 @@ A cron job monitors FD usage every 5 minutes.
 tail -f /var/log/relay-fd-monitor.log
 ```
 
-## Recreating Containers
+## Deploying / Updating
 
-### cloudflared
-```bash
-docker stop cloudflared && docker rm cloudflared
-docker run -d \
-  --name cloudflared \
-  --restart unless-stopped \
-  --network relay-network \
-  cloudflare/cloudflared:latest \
-  tunnel --no-autoupdate run --token <TUNNEL_TOKEN>
-```
-Get the tunnel token from Cloudflare Zero Trust → Networks → Tunnels → Configure.
+All services are managed via `docker-compose.prod.yaml` at the repo root:
 
-### relay-server
 ```bash
-docker stop relay-server && docker rm relay-server
-docker run -d \
-  --name relay-server \
-  --restart unless-stopped \
-  --network relay-network \
-  --ulimit nofile=65536:524288 \
-  -v /root/relay.toml:/app/relay.toml:ro \
-  --env-file /root/auth.env \
-  relay-server:custom
+# Deploy/update all services
+docker compose -f docker-compose.prod.yaml build
+docker compose -f docker-compose.prod.yaml up -d
+
+# Rebuild a single service
+docker compose -f docker-compose.prod.yaml build relay-server
+docker compose -f docker-compose.prod.yaml up -d relay-server
 ```
 
-### relay-git-sync
-```bash
-docker stop relay-git-sync && docker rm relay-git-sync
-docker run -d \
-  --name relay-git-sync \
-  --restart unless-stopped \
-  --network relay-network \
-  -p 127.0.0.1:8001:8000 \
-  -v /root/relay-git-sync-data:/data \
-  -v /root/relay-git-sync-data/webhook_handler.py:/app/webhook_handler.py \
-  -v /root/relay-git-sync-data/persistence.py:/app/persistence.py \
-  -e RELAY_GIT_DATA_DIR=/data \
-  -e "SSH_PRIVATE_KEY=$(cat /root/.ssh/relay-git-sync)" \
-  -e RELAY_SERVER_URL=http://relay-server:8080 \
-  -e "RELAY_SERVER_API_KEY=<API_KEY>" \
-  -e "WEBHOOK_SECRET=<WEBHOOK_SECRET>" \
-  docker.system3.md/relay-git-sync:latest
-```
+See `.env.example` for required environment variables.
 
 ## Troubleshooting
 
