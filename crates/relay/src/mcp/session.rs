@@ -3,6 +3,10 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Instant;
 
+/// Maximum session age before cleanup. Sessions from clients that never
+/// send DELETE (e.g. Claude.ai) are purged after this duration.
+const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
 pub struct McpSession {
     pub session_id: String,
     pub protocol_version: String,
@@ -30,6 +34,7 @@ impl SessionManager {
         protocol_version: String,
         client_info: Option<Value>,
     ) -> String {
+        self.cleanup_stale(SESSION_TTL);
         let session_id = nanoid::nanoid!(32);
         let now = Instant::now();
         let session = McpSession {
@@ -75,6 +80,12 @@ impl SessionManager {
     /// Remove a session. Returns true if session existed.
     pub fn remove_session(&self, session_id: &str) -> bool {
         self.sessions.remove(session_id).is_some()
+    }
+
+    /// Remove sessions older than `max_age`.
+    pub fn cleanup_stale(&self, max_age: std::time::Duration) {
+        let cutoff = Instant::now() - max_age;
+        self.sessions.retain(|_, session| session.created_at > cutoff);
     }
 }
 
@@ -169,5 +180,30 @@ mod tests {
         let session = mgr.get_session(&id).unwrap();
         assert!(session.read_docs.contains("doc-123"));
         assert_eq!(session.read_docs.len(), 1);
+    }
+
+    #[test]
+    fn cleanup_stale_removes_old_sessions() {
+        let mgr = SessionManager::new();
+        let id = mgr.create_session("2025-03-26".into(), None);
+
+        // Session exists
+        assert!(mgr.get_session(&id).is_some());
+
+        // Cleanup with 0 duration removes everything
+        mgr.cleanup_stale(std::time::Duration::from_secs(0));
+
+        assert!(mgr.get_session(&id).is_none());
+    }
+
+    #[test]
+    fn cleanup_stale_keeps_fresh_sessions() {
+        let mgr = SessionManager::new();
+        let id = mgr.create_session("2025-03-26".into(), None);
+
+        // Cleanup with 1 hour keeps the just-created session
+        mgr.cleanup_stale(std::time::Duration::from_secs(3600));
+
+        assert!(mgr.get_session(&id).is_some());
     }
 }

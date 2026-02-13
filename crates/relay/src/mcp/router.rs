@@ -474,4 +474,112 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn read_then_edit_via_session_id_argument() {
+        use std::collections::HashMap;
+        use yrs::{Any, Doc, Map, Text, Transact, WriteTxn};
+
+        let server = test_server();
+
+        // Set up a doc with content
+        let relay_id = "cb696037-0f72-4e93-8717-4e433129d789";
+        let folder_uuid = "aaaa0000-0000-0000-0000-000000000000";
+        let content_uuid = "uuid-rte";
+        let folder_doc_id = format!("{}-{}", relay_id, folder_uuid);
+        let content_doc_id = format!("{}-{}", relay_id, content_uuid);
+
+        // Create folder doc with filemeta
+        let folder_doc = Doc::new();
+        {
+            let mut txn = folder_doc.transact_mut();
+            let filemeta = txn.get_or_insert_map("filemeta_v0");
+            let mut map = HashMap::new();
+            map.insert("id".to_string(), Any::String(content_uuid.into()));
+            map.insert("type".to_string(), Any::String("markdown".into()));
+            map.insert("version".to_string(), Any::Number(0.0));
+            filemeta.insert(&mut txn, "/EditTest.md", Any::Map(map.into()));
+        }
+
+        server
+            .doc_resolver()
+            .update_folder_from_doc(&folder_doc_id, 0, &folder_doc);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dwskv = rt.block_on(async {
+            y_sweet_core::doc_sync::DocWithSyncKv::new(&content_doc_id, None, || (), None)
+                .await
+                .unwrap()
+        });
+        {
+            let awareness = dwskv.awareness();
+            let mut guard = awareness.write().unwrap();
+            let mut txn = guard.doc.transact_mut();
+            let text = txn.get_or_insert_text("contents");
+            text.insert(&mut txn, 0, "hello world");
+        }
+        server.docs().insert(content_doc_id.clone(), dwskv);
+
+        // Create and initialize a session (session 1 — used for read)
+        let sid = server
+            .mcp_sessions
+            .create_session("2025-03-26".into(), None);
+        server.mcp_sessions.mark_initialized(&sid);
+
+        // Step 1: Call read tool
+        let read_req = make_request(
+            json!(20),
+            "tools/call",
+            Some(json!({"name": "read", "arguments": {"file_path": "Lens/EditTest.md"}})),
+        );
+        let (read_resp, _) = dispatch_request(&server, Some(&sid), &read_req);
+        assert!(read_resp.error.is_none(), "read should succeed");
+
+        // Extract session ID from response text
+        let read_result = read_resp.result.unwrap();
+        let read_text = read_result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            read_text.contains("[session: "),
+            "read response should contain session ID: {}",
+            read_text
+        );
+        let session_token = read_text
+            .rsplit("[session: ")
+            .next()
+            .unwrap()
+            .trim_end_matches(']');
+
+        // Step 2: Call edit tool with extracted session_id, using a DIFFERENT transport session
+        let sid2 = server
+            .mcp_sessions
+            .create_session("2025-03-26".into(), None);
+        server.mcp_sessions.mark_initialized(&sid2);
+
+        let edit_req = make_request(
+            json!(21),
+            "tools/call",
+            Some(json!({
+                "name": "edit",
+                "arguments": {
+                    "file_path": "Lens/EditTest.md",
+                    "old_string": "hello",
+                    "new_string": "goodbye",
+                    "session_id": session_token
+                }
+            })),
+        );
+
+        let (edit_resp, _) = dispatch_request(&server, Some(&sid2), &edit_req);
+        assert!(edit_resp.error.is_none(), "edit should succeed at protocol level");
+
+        let edit_result = edit_resp.result.unwrap();
+        assert_eq!(
+            edit_result["isError"], false,
+            "edit tool should succeed: {}",
+            edit_result["content"][0]["text"]
+        );
+    }
 }

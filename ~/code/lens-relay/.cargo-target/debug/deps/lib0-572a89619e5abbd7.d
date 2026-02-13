@@ -1,0 +1,13 @@
+/home/penguin/code/lens-relay/ws1/~/code/lens-relay/.cargo-target/debug/deps/lib0-572a89619e5abbd7.d: /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/lib.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/any.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/binary.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/decoding.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/encoding.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/error.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/number.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/json_parser.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/macros.rs
+
+/home/penguin/code/lens-relay/ws1/~/code/lens-relay/.cargo-target/debug/deps/liblib0-572a89619e5abbd7.rmeta: /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/lib.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/any.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/binary.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/decoding.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/encoding.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/error.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/number.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/json_parser.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/macros.rs
+
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/lib.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/any.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/binary.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/decoding.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/encoding.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/error.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/number.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/json_parser.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lib0-0.16.10/src/macros.rs:

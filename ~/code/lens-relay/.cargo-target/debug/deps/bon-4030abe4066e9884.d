@@ -1,0 +1,12 @@
+/home/penguin/code/lens-relay/ws1/~/code/lens-relay/.cargo-target/debug/deps/bon-4030abe4066e9884.d: /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/lib.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/collections.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/mod.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/ide.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/better_errors.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/cfg_eval.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/builder_state.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/../README.md
+
+/home/penguin/code/lens-relay/ws1/~/code/lens-relay/.cargo-target/debug/deps/libbon-4030abe4066e9884.rmeta: /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/lib.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/collections.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/mod.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/ide.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/better_errors.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/cfg_eval.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/builder_state.rs /home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/../README.md
+
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/lib.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/collections.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/mod.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/ide.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/better_errors.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/__/cfg_eval.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/builder_state.rs:
+/home/penguin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bon-3.8.2/src/../README.md:

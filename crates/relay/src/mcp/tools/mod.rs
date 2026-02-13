@@ -14,7 +14,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "read",
-            "description": "Reads a document from the knowledge base. Returns content with line numbers (cat -n format). Supports partial reads via offset and limit.",
+            "description": "Reads a document from the knowledge base. Returns content with line numbers (cat -n format). Supports partial reads via offset and limit. The response includes a [session: ...] value — pass this to the edit tool's session_id parameter when editing.",
             "inputSchema": {
                 "type": "object",
                 "required": ["file_path"],
@@ -118,7 +118,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "description": "Edit a document by replacing old_string with new_string. The change is wrapped in CriticMarkup ({--old--}{++new++}) for human review. You must read the document first.",
             "inputSchema": {
                 "type": "object",
-                "required": ["file_path", "old_string", "new_string"],
+                "required": ["file_path", "old_string", "new_string", "session_id"],
                 "additionalProperties": false,
                 "properties": {
                     "file_path": {
@@ -132,6 +132,10 @@ pub fn tool_definitions() -> Vec<Value> {
                     "new_string": {
                         "type": "string",
                         "description": "The replacement text. Empty string for deletion."
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "The session value from the read tool's response. Required to verify the document was read before editing."
                     }
                 }
             }
@@ -164,7 +168,7 @@ pub fn dispatch_tool(server: &Arc<Server>, session_id: &str, name: &str, argumen
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
-        "edit" => match edit::execute(server, session_id, arguments) {
+        "edit" => match edit::execute(server, arguments) {
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
