@@ -227,7 +227,7 @@ mod tests {
 
         // Should return a new session ID
         let sid = new_session_id.expect("initialize should return session ID");
-        assert_eq!(sid.len(), 32);
+        assert_eq!(sid.len(), 8);
 
         // Response should have correct structure
         assert_eq!(resp.jsonrpc, "2.0");

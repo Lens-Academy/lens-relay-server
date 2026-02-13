@@ -35,7 +35,7 @@ impl SessionManager {
         client_info: Option<Value>,
     ) -> String {
         self.cleanup_stale(SESSION_TTL);
-        let session_id = nanoid::nanoid!(32);
+        let session_id = nanoid::nanoid!(8);
         let now = Instant::now();
         let session = McpSession {
             session_id: session_id.clone(),
@@ -98,7 +98,7 @@ mod tests {
     fn create_session_returns_32_char_id() {
         let mgr = SessionManager::new();
         let id = mgr.create_session("2025-03-26".into(), None);
-        assert_eq!(id.len(), 32);
+        assert_eq!(id.len(), 8);
     }
 
     #[test]
