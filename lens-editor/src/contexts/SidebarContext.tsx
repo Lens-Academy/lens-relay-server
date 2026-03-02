@@ -15,6 +15,7 @@ const noopManager: PanelManager = {
   getWidth: () => 0,
   setWidth: () => {},
   onDragEnd: () => {},
+  collapseWithInfinity: () => {},
   collapsedState: {},
   getDebugInfo: () => ({ lastWidth: 0, userThresholds: new Map(), widths: {} }),
 };

@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { EditorView } from '@codemirror/view';
+import { criticMarkupField } from '../Editor/extensions/criticmarkup';
+import { parseThreads } from '../../lib/criticmarkup-parser';
 import { SyncStatus } from '../SyncStatus/SyncStatus';
 import { Editor } from '../Editor/Editor';
 import { DocumentTitle } from '../DocumentTitle';
@@ -37,6 +39,7 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
   const { manager, headerStage } = useSidebar();
   const hasDiscussion = useHasDiscussion();
   const [addCommentTrigger, setAddCommentTrigger] = useState(0);
+  const [synced, setSynced] = useState(false);
 
   // Derive current file path from doc ID for wikilink resolution
   const currentFilePath = useMemo(() => {
@@ -57,11 +60,29 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
     setStateVersion(v => v + 1);
   }, []);
 
+  // Callback for Y.Doc sync completion
+  const handleSynced = useCallback(() => setSynced(true), []);
+
   // Callback for "Add Comment" from editor context menu
   const handleRequestAddComment = useCallback(() => {
     manager.expand('comment-margin');
     setAddCommentTrigger(v => v + 1);
   }, [manager.expand]);
+
+  // Auto-collapse comment margin on notes without comments (after initial Y.Doc sync)
+  const initialCommentCheckRef = useRef(false);
+  useEffect(() => {
+    if (initialCommentCheckRef.current || !editorView || !synced) return;
+    initialCommentCheckRef.current = true;
+
+    const ranges = editorView.state.field(criticMarkupField);
+    const threads = parseThreads(ranges);
+    if (threads.length === 0) {
+      manager.collapseWithInfinity('comment-margin');
+    } else {
+      manager.expand('comment-margin');
+    }
+  }, [synced, editorView, manager]);
 
   // Auto-split ToC/Backlinks vertical split inside right sidebar
   const sidebarContainerRef = useRef<HTMLDivElement>(null);
@@ -158,6 +179,7 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
               readOnly={!canWrite}
               onEditorReady={handleEditorReady}
               onDocChange={handleDocChange}
+              onSynced={handleSynced}
               onNavigate={onNavigate}
               onRequestAddComment={handleRequestAddComment}
               metadata={metadata}

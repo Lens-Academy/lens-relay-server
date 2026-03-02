@@ -38,6 +38,8 @@ export interface PanelManager {
   onDragEnd: (id: string) => void;
   /** Get the collapsed state map (for rendering) */
   collapsedState: Record<string, boolean>;
+  /** Collapse a panel and set its threshold to 'infinity' (auto-resize won't re-open it) */
+  collapseWithInfinity: (id: string) => void;
   /** Get debug info snapshot (viewport width, user thresholds, pixel widths) */
   getDebugInfo: () => PanelDebugInfo;
 }
@@ -291,6 +293,21 @@ export function usePanelManager(config: PanelConfig): PanelManager {
     setWidths(prev => ({ ...prev, [id]: entry.maxPx ?? entry.minPx }));
   }, [config, setUserThreshold]);
 
+  const collapseWithInfinity = useCallback((id: string) => {
+    const entry = config[id];
+    if (!entry) return;
+
+    // Always set infinity threshold (even if already collapsed, handles cross-doc navigation)
+    userThresholdRef.current.set(id, 'infinity');
+
+    if (!collapsedRef.current[id]) {
+      // Not yet collapsed — collapse and animate
+      collapsedRef.current[id] = true;
+      setCollapsed(prev => ({ ...prev, [id]: true }));
+      animateContainer(entry.group);
+    }
+  }, [config]);
+
   // Auto-collapse/expand based on viewport width using greedy fill
   const autoResize = useCallback((widthPx: number) => {
     if (widthPx <= 0) return;
@@ -365,6 +382,7 @@ export function usePanelManager(config: PanelConfig): PanelManager {
     isCollapsed,
     toggle,
     expand,
+    collapseWithInfinity,
     autoResize,
     getWidth,
     setWidth,

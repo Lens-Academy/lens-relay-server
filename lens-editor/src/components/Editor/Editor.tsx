@@ -47,6 +47,7 @@ interface EditorProps {
   readOnly?: boolean;
   onEditorReady?: (view: EditorView) => void;
   onDocChange?: () => void;
+  onSynced?: () => void;
   onNavigate?: (docId: string) => void;
   onRequestAddComment?: () => void;
   metadata?: FolderMetadata;
@@ -91,7 +92,7 @@ function LoadingOverlay() {
  * Editor always renders so yCollab can sync initial content.
  * Loading overlay hides once synced.
  */
-export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, onRequestAddComment, metadata, currentFilePath }: EditorProps) {
+export function Editor({ readOnly, onEditorReady, onDocChange, onSynced, onNavigate, onRequestAddComment, metadata, currentFilePath }: EditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ydoc = useYDoc();
@@ -201,16 +202,20 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, onReq
   useEffect(() => {
     if ((provider as any).synced) {
       setSynced(true);
+      onSynced?.();
       return;
     }
 
-    const handleSynced = () => setSynced(true);
+    const handleSynced = () => {
+      setSynced(true);
+      onSynced?.();
+    };
     provider.on('synced', handleSynced);
 
     return () => {
       provider.off('synced', handleSynced);
     };
-  }, [provider]);
+  }, [provider]); // onSynced is stable (useCallback), no dep needed
 
   // Create editor - must happen before sync so yCollab binds initial content
   useEffect(() => {
