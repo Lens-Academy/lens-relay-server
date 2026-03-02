@@ -131,10 +131,12 @@ export function EditorArea({ currentDocId }: { currentDocId: string }) {
       <div id="editor-area" className="flex-1 flex min-h-0">
         {/* Editor fills remaining space */}
         <div id="editor" className="flex-1 flex flex-col min-w-0 bg-white" style={{ minWidth: 250 }}>
-          <div className="px-6 pt-5 pb-1">
-            <DocumentTitle currentDocId={currentDocId} />
+          <div className="max-w-[700px] mx-auto w-full">
+            <div className="px-6 pt-5 pb-1">
+              <DocumentTitle currentDocId={currentDocId} />
+            </div>
+            <div className="mx-6 border-b border-gray-200" />
           </div>
-          <div className="mx-6 border-b border-gray-200" />
           <div className="flex-1 min-h-0">
             <Editor
               readOnly={!canWrite}

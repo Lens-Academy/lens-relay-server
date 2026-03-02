@@ -291,7 +291,10 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, onReq
             overflow: 'auto',
           },
           '.cm-content': {
-            padding: '16px',
+            padding: '16px 24px',
+            maxWidth: '700px',
+            marginLeft: 'auto',
+            marginRight: 'auto',
           },
           // Hide gutters (fold markers only, no line numbers)
           '.cm-gutters': {
