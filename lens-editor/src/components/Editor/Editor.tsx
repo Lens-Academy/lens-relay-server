@@ -19,6 +19,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { TaskList } from '@lezer/markdown';
 import { WikilinkExtension } from './extensions/wikilinkParser';
 import { tightMarkdownKeymap } from './extensions/tightListEnter';
+import { checklistKeymap } from './extensions/checklistToggle';
 import { indentMore, indentLess } from '@codemirror/commands';
 import { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
 import * as Y from 'yjs';
@@ -264,6 +265,7 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onNavigate, onReq
         }),
         livePreview(wikilinkContextRef.current),
         Prec.high(keymap.of(tightMarkdownKeymap)),
+        Prec.high(keymap.of(checklistKeymap)),
         listIndentKeymap,
         yCollab(ytext, provider.awareness, { undoManager }),
         wikilinkAutocomplete(getMetadata, getCurrentFilePath),

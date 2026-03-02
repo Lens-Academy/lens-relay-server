@@ -8,6 +8,7 @@ import { livePreview } from '../components/Editor/extensions/livePreview';
 import type { WikilinkContext } from '../components/Editor/extensions/livePreview';
 import { criticMarkupExtension } from '../components/Editor/extensions/criticmarkup';
 import { tightMarkdownKeymap } from '../components/Editor/extensions/tightListEnter';
+import { checklistKeymap } from '../components/Editor/extensions/checklistToggle';
 
 /**
  * Create an EditorView with live preview extension for testing.
@@ -192,5 +193,13 @@ export function createMarkdownEditor(
  */
 export function pressEnter(view: EditorView): boolean {
   const binding = tightMarkdownKeymap.find((k) => k.key === 'Enter');
+  return binding?.run?.(view) ?? false;
+}
+
+/**
+ * Simulate pressing Ctrl+L (checklist toggle) through the checklist keymap.
+ */
+export function pressCtrlL(view: EditorView): boolean {
+  const binding = checklistKeymap.find((k) => k.key === 'Mod-l');
   return binding?.run?.(view) ?? false;
 }
