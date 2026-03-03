@@ -156,6 +156,14 @@
   font-size: 0.9em;
 }
 
+/* Fenced code blocks */
+.cm-code-block {
+  background-color: #f3f4f6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0 0.5em;
+}
+
 /* Bullet list dot */
 .cm-bullet {
   color: #6b7280;

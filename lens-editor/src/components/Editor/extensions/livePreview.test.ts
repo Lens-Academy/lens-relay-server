@@ -377,8 +377,8 @@ describe('livePreview - inline code', () => {
     const { view, cleanup: c } = createTestEditor(content, 6);
     cleanup = c;
 
-    // Backticks should be visible (no hidden-syntax on CodeMark)
-    expect(hasClass(view, 'cm-inline-code')).toBe(false);
+    // Inline code styling should persist even when cursor is inside
+    expect(hasClass(view, 'cm-inline-code')).toBe(true);
   });
 });
 
@@ -455,6 +455,112 @@ describe('livePreview - bullet lists', () => {
     cleanup = c;
 
     expect(hasClass(view, 'cm-bullet')).toBe(false);
+  });
+});
+
+describe('livePreview - fenced code blocks', () => {
+  let cleanup: () => void;
+
+  afterEach(() => {
+    if (cleanup) cleanup();
+  });
+
+  it('applies cm-code-block line class to code lines when cursor outside', () => {
+    const content = 'before\n```\ncode line\n```\nafter';
+    const { view, cleanup: c } = createTestEditor(content, 0);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-code-block')).toBe(true);
+  });
+
+  it('applies cm-code-block line class when cursor inside too', () => {
+    const content = 'before\n```\ncode line\n```\nafter';
+    // Cursor inside the code block on "code line"
+    const { view, cleanup: c } = createTestEditor(content, 12);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-code-block')).toBe(true);
+  });
+
+  it('hides opening fence markers when cursor outside', () => {
+    const content = 'before\n```\ncode line\n```\nafter';
+    const { view, cleanup: c } = createTestEditor(content, 0);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-hidden-syntax')).toBe(true);
+  });
+
+  it('hides closing fence markers when cursor outside', () => {
+    const content = 'before\n```\ncode line\n```\nafter';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    // Both opening and closing fences hidden = at least 2 hidden elements
+    expect(countClass(view, 'cm-hidden-syntax')).toBeGreaterThanOrEqual(2);
+  });
+
+  it('hides language info when cursor outside', () => {
+    const content = 'before\n```javascript\ncode line\n```\nafter';
+    const { view, cleanup: c } = createTestEditor(content, 0);
+    cleanup = c;
+
+    // Language info + fence markers should all be hidden
+    expect(hasClass(view, 'cm-hidden-syntax')).toBe(true);
+  });
+
+  it('shows fence markers when cursor inside code block', () => {
+    const content = 'before\n```\ncode line\n```\nafter';
+    // Cursor on "code line"
+    const { view, cleanup: c } = createTestEditor(content, 12);
+    cleanup = c;
+
+    // Fence markers should NOT be hidden
+    expect(countClass(view, 'cm-hidden-syntax')).toBe(0);
+  });
+
+  it('cursor moving in/out toggles fence visibility', () => {
+    const content = 'before\n```\ncode line\n```\nafter';
+    const { view, cleanup: c } = createTestEditor(content, 0);
+    cleanup = c;
+
+    // Initially outside: fences hidden
+    expect(countClass(view, 'cm-hidden-syntax')).toBeGreaterThan(0);
+
+    // Move cursor inside code block
+    moveCursor(view, 12);
+    expect(countClass(view, 'cm-hidden-syntax')).toBe(0);
+
+    // Move cursor back outside
+    moveCursor(view, 0);
+    expect(countClass(view, 'cm-hidden-syntax')).toBeGreaterThan(0);
+  });
+
+  it('code block with no language info', () => {
+    const content = 'before\n```\nplain code\n```\nafter';
+    const { view, cleanup: c } = createTestEditor(content, 0);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-code-block')).toBe(true);
+    expect(hasClass(view, 'cm-hidden-syntax')).toBe(true);
+  });
+
+  it('multiple code blocks styled independently', () => {
+    const content = '```\nblock1\n```\ntext\n```\nblock2\n```';
+    const { view, cleanup: c } = createTestEditor(content, content.indexOf('text'));
+    cleanup = c;
+
+    // Both blocks get cm-code-block lines
+    // block1 has 3 lines, block2 has 3 lines = at least 6 code-block lines
+    expect(countClass(view, 'cm-code-block')).toBeGreaterThanOrEqual(6);
+  });
+
+  it('inline code still works alongside fenced code blocks', () => {
+    const content = 'Use `inline` here\n```\nfenced\n```\nmore';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-inline-code')).toBe(true);
+    expect(hasClass(view, 'cm-code-block')).toBe(true);
   });
 });
 

@@ -380,16 +380,56 @@ const livePreviewPlugin = ViewPlugin.fromClass(
               }
             }
 
-            // InlineCode: style content and hide backticks when cursor not on code
-            if (node.name === 'InlineCode') {
-              if (!selectionIntersects(selection, node.from, node.to)) {
-                // Apply styling to the entire inline code content
+            // FencedCode: line decorations for background + hide fences when cursor outside
+            if (node.name === 'FencedCode') {
+              const cursorInside = selectionIntersects(selection, node.from, node.to);
+
+              // Add cm-code-block line class to every line in the fenced code range
+              const startLine = view.state.doc.lineAt(node.from).number;
+              const endLine = view.state.doc.lineAt(node.to).number;
+              for (let ln = startLine; ln <= endLine; ln++) {
+                const line = view.state.doc.line(ln);
                 decorations.push({
-                  from: node.from,
-                  to: node.to,
-                  deco: Decoration.mark({ class: INLINE_CODE_CLASS }),
+                  from: line.from,
+                  to: line.from,
+                  deco: Decoration.line({ class: 'cm-code-block' }),
                 });
               }
+
+              // Hide fence markers and language info when cursor is outside
+              if (!cursorInside) {
+                // Hide opening fence line content (``` + optional language)
+                const openLine = view.state.doc.lineAt(node.from);
+                if (openLine.from < openLine.to) {
+                  decorations.push({
+                    from: openLine.from,
+                    to: openLine.to,
+                    deco: Decoration.mark({ class: HIDDEN_CLASS }),
+                  });
+                }
+
+                // Hide closing fence line content (```)
+                const closeLine = view.state.doc.lineAt(node.to);
+                if (closeLine.from < closeLine.to && closeLine.number !== openLine.number) {
+                  decorations.push({
+                    from: closeLine.from,
+                    to: closeLine.to,
+                    deco: Decoration.mark({ class: HIDDEN_CLASS }),
+                  });
+                }
+              }
+
+              // Skip child iteration (CodeMark/CodeInfo/CodeText handled above)
+              return false;
+            }
+
+            // InlineCode: always style, hide backticks only when cursor outside
+            if (node.name === 'InlineCode') {
+              decorations.push({
+                from: node.from,
+                to: node.to,
+                deco: Decoration.mark({ class: INLINE_CODE_CLASS }),
+              });
             }
 
             // CodeMark (backtick characters): hide when cursor not on inline code
