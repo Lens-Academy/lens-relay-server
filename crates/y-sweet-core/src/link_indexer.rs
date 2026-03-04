@@ -952,6 +952,7 @@ fn rewrite_outgoing_links_for_move(
 // ---------------------------------------------------------------------------
 
 const DEBOUNCE_DURATION: Duration = Duration::from_secs(2);
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// A rename event detected by diffing filemeta snapshots.
 ///
@@ -964,8 +965,22 @@ pub(crate) struct RenameEvent {
     pub old_path: String,
 }
 
+pub struct PendingEntry {
+    pub first_queued: Instant,
+    pub last_updated: Instant,
+}
+
+impl PendingEntry {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            first_queued: now,
+            last_updated: now,
+        }
+    }
+}
+
 pub struct LinkIndexer {
-    pending: Arc<DashMap<String, Instant>>,
+    pending: Arc<DashMap<String, PendingEntry>>,
     index_tx: mpsc::Sender<String>,
     filemeta_cache: Arc<DashMap<String, HashMap<String, (String, String)>>>, // folder_doc_id -> (uuid -> (basename, path))
 }
@@ -985,15 +1000,16 @@ impl LinkIndexer {
 
     pub async fn on_document_update(&self, doc_id: &str) {
         use dashmap::mapref::entry::Entry;
+        let now = Instant::now();
         // Atomically check-and-insert to avoid TOCTOU race where two concurrent
         // calls both see "not pending" and double-send to the channel.
         let is_new = match self.pending.entry(doc_id.to_string()) {
             Entry::Occupied(mut e) => {
-                e.insert(Instant::now());
+                e.get_mut().last_updated = now;
                 false
             }
             Entry::Vacant(e) => {
-                e.insert(Instant::now());
+                e.insert(PendingEntry::new(now));
                 true
             }
         };
@@ -1011,7 +1027,8 @@ impl LinkIndexer {
 
     fn is_ready(&self, doc_id: &str) -> bool {
         if let Some(entry) = self.pending.get(doc_id) {
-            entry.elapsed() >= DEBOUNCE_DURATION
+            entry.last_updated.elapsed() >= DEBOUNCE_DURATION // user paused
+                || entry.first_queued.elapsed() >= DEBOUNCE_DURATION // ceiling: continuous editing
         } else {
             false
         }
@@ -1266,85 +1283,83 @@ impl LinkIndexer {
     ) {
         tracing::info!("Link indexer worker started");
         loop {
-            match rx.recv().await {
-                Some(doc_id) => {
-                    let folder_content = is_folder_doc(&doc_id, &docs);
-
-                    if folder_content.is_none() {
-                        // Content doc — debounce as before.
-                        // Wait until no updates have arrived for DEBOUNCE_DURATION.
-                        // on_document_update resets the timestamp on each call,
-                        // so we loop until elapsed >= DEBOUNCE_DURATION.
-                        loop {
-                            tokio::time::sleep(DEBOUNCE_DURATION).await;
-                            if self.is_ready(&doc_id) {
-                                break;
-                            }
-                            if !self.pending.contains_key(&doc_id) {
-                                break; // Entry removed externally, bail out
-                            }
-                        }
-
-                        if !self.pending.contains_key(&doc_id) {
-                            continue; // Was removed, skip processing
-                        }
+            // 1. Wait for work: either a new channel message or poll timeout
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Some(_) => { /* already in pending map, nothing extra to do */ }
+                        None => break, // channel closed
                     }
-
-                    // Re-check folder status after debounce (content doc could have
-                    // been removed, or we need the content UUIDs fresh).
-                    if let Some(content_uuids) =
-                        folder_content.or_else(|| is_folder_doc(&doc_id, &docs))
-                    {
-                        // Folder doc — process immediately (no debounce)
-
-                        // 1. Detect renames BEFORE re-queuing content docs
-                        let had_renames = self.apply_rename_updates(&doc_id, &docs);
-
-                        // 2. Re-queue loaded content docs — but SKIP when renames were
-                        //    processed.  The rename system already updated wikilinks in
-                        //    backlinker content docs.  Re-queuing them for re-indexing
-                        //    would race with the next rename: the debounced re-indexer
-                        //    would try to resolve the OLD name against the NEW metadata,
-                        //    fail, and clear the backlinks.  The next non-rename folder
-                        //    doc update (add/delete/backlinks write-back) will still
-                        //    trigger re-queuing normally.
-                        if !had_renames {
-                            tracing::info!(
-                                "Folder doc {} has {} content docs, re-queuing loaded ones",
-                                doc_id,
-                                content_uuids.len()
-                            );
-                            let relay_id = parse_doc_id(&doc_id)
-                                .map(|(r, _)| r)
-                                .unwrap_or(&doc_id[..36.min(doc_id.len())]);
-                            for uuid in content_uuids {
-                                let content_id = format!("{}-{}", relay_id, uuid);
-                                if docs.contains_key(&content_id) {
-                                    tracing::info!("Re-queuing content doc: {}", content_id);
-                                    self.on_document_update(&content_id).await;
-                                }
-                            }
-                        } else {
-                            tracing::info!(
-                                "Folder doc {}: skipping content re-queue after rename (avoids stale backlink race)",
-                                doc_id
-                            );
-                        }
-
-                        // Update DocumentResolver so MCP tools see current paths
-                        doc_resolver.update_folder(&doc_id, &docs);
-                    } else {
-                        // Content doc — index it
-                        tracing::info!("Indexing content doc: {}", doc_id);
-                        let folder_doc_ids = find_all_folder_docs(&docs);
-                        match self.index_document(&doc_id, &docs, &folder_doc_ids) {
-                            Ok(()) => tracing::info!("Successfully indexed: {}", doc_id),
-                            Err(e) => tracing::error!("Failed to index {}: {:?}", doc_id, e),
-                        }
-                    }
-                    self.mark_indexed(&doc_id);
                 }
-                None => break,
+                _ = tokio::time::sleep(POLL_INTERVAL) => {}
+            }
+
+            // 2. Drain any remaining channel messages (non-blocking)
+            while rx.try_recv().is_ok() {}
+
+            // 3. Collect all ready doc_ids
+            let ready: Vec<String> = self
+                .pending
+                .iter()
+                .filter(|e| {
+                    let is_folder = is_folder_doc(e.key(), &docs).is_some();
+                    is_folder || self.is_ready(e.key())
+                })
+                .map(|e| e.key().clone())
+                .collect();
+
+            // 4. Process each ready doc (sequentially, but NO sleeping between them)
+            for doc_id in ready {
+                // Re-check folder status (need fresh content UUIDs).
+                if let Some(content_uuids) = is_folder_doc(&doc_id, &docs) {
+                    // Folder doc — process immediately (no debounce)
+
+                    // 1. Detect renames BEFORE re-queuing content docs
+                    let had_renames = self.apply_rename_updates(&doc_id, &docs);
+
+                    // 2. Re-queue loaded content docs — but SKIP when renames were
+                    //    processed.  The rename system already updated wikilinks in
+                    //    backlinker content docs.  Re-queuing them for re-indexing
+                    //    would race with the next rename: the debounced re-indexer
+                    //    would try to resolve the OLD name against the NEW metadata,
+                    //    fail, and clear the backlinks.  The next non-rename folder
+                    //    doc update (add/delete/backlinks write-back) will still
+                    //    trigger re-queuing normally.
+                    if !had_renames {
+                        tracing::info!(
+                            "Folder doc {} has {} content docs, re-queuing loaded ones",
+                            doc_id,
+                            content_uuids.len()
+                        );
+                        let relay_id = parse_doc_id(&doc_id)
+                            .map(|(r, _)| r)
+                            .unwrap_or(&doc_id[..36.min(doc_id.len())]);
+                        for uuid in content_uuids {
+                            let content_id = format!("{}-{}", relay_id, uuid);
+                            if docs.contains_key(&content_id) {
+                                tracing::info!("Re-queuing content doc: {}", content_id);
+                                self.on_document_update(&content_id).await;
+                            }
+                        }
+                    } else {
+                        tracing::info!(
+                            "Folder doc {}: skipping content re-queue after rename (avoids stale backlink race)",
+                            doc_id
+                        );
+                    }
+
+                    // Update DocumentResolver so MCP tools see current paths
+                    doc_resolver.update_folder(&doc_id, &docs);
+                } else {
+                    // Content doc — index it
+                    tracing::info!("Indexing content doc: {}", doc_id);
+                    let folder_doc_ids = find_all_folder_docs(&docs);
+                    match self.index_document(&doc_id, &docs, &folder_doc_ids) {
+                        Ok(()) => tracing::info!("Successfully indexed: {}", doc_id),
+                        Err(e) => tracing::error!("Failed to index {}: {:?}", doc_id, e),
+                    }
+                }
+                self.mark_indexed(&doc_id);
             }
         }
     }
@@ -1538,6 +1553,29 @@ mod tests {
         assert!(
             rx.try_recv().is_ok(),
             "should queue new message after mark_indexed"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuous_editing_hits_ceiling() {
+        let (indexer, _rx) = LinkIndexer::new();
+
+        // First update
+        indexer.on_document_update("doc-1").await;
+
+        // Simulate continuous typing: update every 500ms for 3 seconds.
+        // Each update resets last_updated, but first_queued stays at the original time.
+        for _ in 0..6 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            indexer.on_document_update("doc-1").await;
+        }
+
+        // At this point ~3s have elapsed since first_queued.
+        // last_updated was just reset, so debounce (last_updated >= 2s) would NOT fire.
+        // But ceiling (first_queued >= 2s) should fire.
+        assert!(
+            indexer.is_ready("doc-1"),
+            "should be ready via ceiling even though last_updated was just reset"
         );
     }
 

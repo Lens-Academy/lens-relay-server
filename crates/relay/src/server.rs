@@ -203,11 +203,18 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Follows the same debounce pattern as LinkIndexer::run_worker:
 /// - Content docs: debounce 2 seconds, then re-read Y.Text("contents") and upsert
 /// - Folder docs: process immediately, detect added/removed docs, update search index
+const SEARCH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+fn search_is_ready(entry: &link_indexer::PendingEntry) -> bool {
+    entry.last_updated.elapsed() >= SEARCH_DEBOUNCE
+        || entry.first_queued.elapsed() >= SEARCH_DEBOUNCE
+}
+
 async fn search_worker(
     mut rx: tokio::sync::mpsc::Receiver<String>,
     search_index: Arc<SearchIndex>,
     docs: Arc<DashMap<String, DocWithSyncKv>>,
-    pending: Arc<DashMap<String, tokio::time::Instant>>,
+    pending: Arc<DashMap<String, link_indexer::PendingEntry>>,
 ) {
     tracing::info!("Search index worker started");
 
@@ -215,52 +222,49 @@ async fn search_worker(
     let filemeta_cache: DashMap<String, std::collections::HashMap<String, String>> = DashMap::new();
 
     loop {
-        match rx.recv().await {
-            Some(doc_id) => {
-                let folder_content = link_indexer::is_folder_doc(&doc_id, &docs);
-
-                if folder_content.is_none() {
-                    // Content doc — debounce: wait until no updates for SEARCH_DEBOUNCE
-                    loop {
-                        tokio::time::sleep(SEARCH_DEBOUNCE).await;
-                        if let Some(entry) = pending.get(&doc_id) {
-                            if entry.elapsed() >= SEARCH_DEBOUNCE {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Skip if entry was removed while we waited
-                    if !pending.contains_key(&doc_id) {
-                        continue;
-                    }
-                }
-
-                // Remove from pending
-                pending.remove(&doc_id);
-
-                if let Some(content_uuids) =
-                    folder_content.or_else(|| link_indexer::is_folder_doc(&doc_id, &docs))
-                {
-                    // Folder doc — detect added/removed documents
-                    search_handle_folder_update(
-                        &doc_id,
-                        &content_uuids,
-                        &docs,
-                        &search_index,
-                        &filemeta_cache,
-                        &pending,
-                        &rx,
-                    )
-                    .await;
-                } else {
-                    // Content doc — reindex into search
-                    search_handle_content_update(&doc_id, &docs, &search_index);
+        // 1. Wait for work: either a new channel message or poll timeout
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Some(_) => { /* already in pending map */ }
+                    None => break,
                 }
             }
-            None => break,
+            _ = tokio::time::sleep(SEARCH_POLL_INTERVAL) => {}
+        }
+
+        // 2. Drain remaining channel messages (non-blocking)
+        while rx.try_recv().is_ok() {}
+
+        // 3. Collect all ready doc_ids
+        let ready: Vec<String> = pending
+            .iter()
+            .filter(|e| {
+                let is_folder = link_indexer::is_folder_doc(e.key(), &docs).is_some();
+                is_folder || search_is_ready(e.value())
+            })
+            .map(|e| e.key().clone())
+            .collect();
+
+        // 4. Process each ready doc
+        for doc_id in ready {
+            pending.remove(&doc_id);
+
+            if let Some(content_uuids) = link_indexer::is_folder_doc(&doc_id, &docs) {
+                // Folder doc — detect added/removed documents
+                search_handle_folder_update(
+                    &doc_id,
+                    &content_uuids,
+                    &docs,
+                    &search_index,
+                    &filemeta_cache,
+                    &pending,
+                )
+                .await;
+            } else {
+                // Content doc — reindex into search
+                search_handle_content_update(&doc_id, &docs, &search_index);
+            }
         }
     }
 }
@@ -351,8 +355,7 @@ async fn search_handle_folder_update(
     docs: &DashMap<String, DocWithSyncKv>,
     search_index: &SearchIndex,
     filemeta_cache: &DashMap<String, std::collections::HashMap<String, String>>,
-    pending: &DashMap<String, tokio::time::Instant>,
-    _rx: &tokio::sync::mpsc::Receiver<String>,
+    pending: &DashMap<String, link_indexer::PendingEntry>,
 ) {
     // Build current uuid -> title map from filemeta
     let current_map: std::collections::HashMap<String, String> = {
@@ -412,7 +415,10 @@ async fn search_handle_folder_update(
                 // New or renamed — reindex content
                 let content_id = format!("{}-{}", relay_id, uuid);
                 if docs.contains_key(&content_id) {
-                    pending.insert(content_id.clone(), tokio::time::Instant::now());
+                    pending.insert(
+                        content_id.clone(),
+                        link_indexer::PendingEntry::new(tokio::time::Instant::now()),
+                    );
                     search_handle_content_update(&content_id, docs, search_index);
                     // Remove pending entry so future edits trigger normal callback -> worker flow.
                     // Without this, the callback's Entry::Occupied dedup suppresses all future sends.
@@ -454,7 +460,7 @@ pub struct Server {
     search_index: Option<Arc<SearchIndex>>,
     search_ready: Arc<std::sync::atomic::AtomicBool>,
     search_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    search_pending: Option<Arc<DashMap<String, tokio::time::Instant>>>,
+    search_pending: Option<Arc<DashMap<String, link_indexer::PendingEntry>>>,
     doc_resolver: Arc<DocumentResolver>,
     pub(crate) mcp_sessions: Arc<crate::mcp::session::SessionManager>,
     pub(crate) mcp_api_key: Option<String>,
@@ -466,7 +472,7 @@ pub struct WorkerReceivers {
     index_rx: Receiver<String>,
     search_rx: Option<(
         tokio::sync::mpsc::Receiver<String>,
-        Arc<DashMap<String, tokio::time::Instant>>,
+        Arc<DashMap<String, link_indexer::PendingEntry>>,
     )>,
 }
 
@@ -546,7 +552,7 @@ impl Server {
         let (search_tx_final, search_pending_final, search_rx_for_worker) =
             if search_index.is_some() {
                 let (search_tx, search_rx) = tokio::sync::mpsc::channel::<String>(1000);
-                let search_pending: Arc<DashMap<String, tokio::time::Instant>> =
+                let search_pending: Arc<DashMap<String, link_indexer::PendingEntry>> =
                     Arc::new(DashMap::new());
                 (
                     Some(search_tx),
@@ -903,13 +909,14 @@ impl Server {
                             // Notify search index worker (with deduplication)
                             if let Some(ref tx) = search_tx_for_callback {
                                 if let Some(ref pending) = search_pending_for_callback {
+                                    let now = tokio::time::Instant::now();
                                     let is_new = match pending.entry(doc_key_for_indexer.clone()) {
                                         Entry::Occupied(mut e) => {
-                                            e.insert(tokio::time::Instant::now());
+                                            e.get_mut().last_updated = now;
                                             false
                                         }
                                         Entry::Vacant(e) => {
-                                            e.insert(tokio::time::Instant::now());
+                                            e.insert(link_indexer::PendingEntry::new(now));
                                             true
                                         }
                                     };
@@ -946,13 +953,14 @@ impl Server {
                                 // Notify search index worker (with deduplication)
                                 if let Some(ref tx) = search_tx {
                                     if let Some(ref pending) = search_pending {
+                                        let now = tokio::time::Instant::now();
                                         let is_new = match pending.entry(doc_key.clone()) {
                                             Entry::Occupied(mut e) => {
-                                                e.insert(tokio::time::Instant::now());
+                                                e.get_mut().last_updated = now;
                                                 false
                                             }
                                             Entry::Vacant(e) => {
-                                                e.insert(tokio::time::Instant::now());
+                                                e.insert(link_indexer::PendingEntry::new(now));
                                                 true
                                             }
                                         };
