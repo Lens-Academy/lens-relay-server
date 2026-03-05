@@ -65,6 +65,12 @@ const server = http.createServer((req, res) => {
       req.headers['authorization'] = `Bearer ${relayServerToken}`;
     }
     proxy.web(req, res, { target: relayUrl, changeOrigin: true });
+  } else if (url.startsWith('/open/')) {
+    // Proxy /open/* path-based document resolution to relay-server
+    if (relayServerToken) {
+      req.headers['authorization'] = `Bearer ${relayServerToken}`;
+    }
+    proxy.web(req, res, { target: relayUrl, changeOrigin: true });
   } else {
     honoListener(req, res);
   }
