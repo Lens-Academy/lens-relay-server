@@ -198,7 +198,7 @@ pub fn tool_definitions() -> Vec<Value> {
 }
 
 /// Dispatch a tool call to the correct handler and wrap result in MCP CallToolResult format.
-pub fn dispatch_tool(
+pub async fn dispatch_tool(
     server: &Arc<Server>,
     transport_session_id: &str,
     name: &str,
@@ -226,7 +226,7 @@ pub fn dispatch_tool(
     }
 
     match name {
-        "read" => match read::execute(server, session_id, arguments) {
+        "read" => match read::execute(server, session_id, arguments).await {
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
@@ -234,19 +234,19 @@ pub fn dispatch_tool(
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
-        "get_links" => match get_links::execute(server, arguments) {
+        "get_links" => match get_links::execute(server, arguments).await {
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
-        "grep" => match grep::execute(server, arguments) {
+        "grep" => match grep::execute(server, arguments).await {
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
-        "edit" => match edit::execute(server, session_id, arguments) {
+        "edit" => match edit::execute(server, session_id, arguments).await {
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },
-        "move_document" => match move_doc::execute(server, arguments) {
+        "move_document" => match move_doc::execute(server, arguments).await {
             Ok(text) => tool_success(&text),
             Err(msg) => tool_error(&msg),
         },

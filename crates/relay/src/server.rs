@@ -835,6 +835,14 @@ impl Server {
         self.load_doc_with_user(doc_id, routing_channel, None).await
     }
 
+    /// Ensure a document is loaded into memory, reloading from storage if GC evicted it.
+    pub async fn ensure_doc_loaded(&self, doc_id: &str) -> Result<()> {
+        if !self.docs.contains_key(doc_id) {
+            self.load_doc(doc_id, None).await?;
+        }
+        Ok(())
+    }
+
     pub async fn load_doc_with_user(
         &self,
         doc_id: &str,

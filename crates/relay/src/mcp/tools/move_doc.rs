@@ -5,7 +5,7 @@ use y_sweet_core::link_indexer;
 use yrs::{Array, Map, ReadTxn, Transact};
 
 /// Execute the `move_document` tool: move a document to a new path within or across folders.
-pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String> {
+pub async fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String> {
     let file_path = arguments
         .get("file_path")
         .and_then(|v| v.as_str())
@@ -31,6 +31,12 @@ pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String
         .doc_resolver()
         .resolve_path(file_path)
         .ok_or_else(|| format!("Document not found: {}", file_path))?;
+
+    // Reload from storage if GC evicted the doc
+    server
+        .ensure_doc_loaded(&doc_info.doc_id)
+        .await
+        .map_err(|e| format!("Error: Failed to load document {}: {}", file_path, e))?;
 
     let uuid = &doc_info.uuid;
     let docs = server.docs();

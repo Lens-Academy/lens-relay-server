@@ -5,7 +5,7 @@ use std::sync::Arc;
 use yrs::{GetString, ReadTxn, Transact};
 
 /// Execute the `grep` tool: regex content search across Y.Docs.
-pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String> {
+pub async fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String> {
     let pattern = arguments
         .get("pattern")
         .and_then(|v| v.as_str())
@@ -75,7 +75,7 @@ pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String
             None => continue,
         };
 
-        let content = match read_doc_content(server, &doc_info.doc_id) {
+        let content = match read_doc_content(server, &doc_info.doc_id).await {
             Some(c) => c,
             None => continue,
         };
@@ -183,7 +183,8 @@ fn build_context_ranges(
 }
 
 /// Read Y.Doc text content for a given doc_id.
-fn read_doc_content(server: &Arc<Server>, doc_id: &str) -> Option<String> {
+async fn read_doc_content(server: &Arc<Server>, doc_id: &str) -> Option<String> {
+    server.ensure_doc_loaded(doc_id).await.ok()?;
     let doc_ref = server.docs().get(doc_id)?;
     let awareness = doc_ref.awareness();
     let guard = awareness.read().unwrap_or_else(|e| e.into_inner());
@@ -249,7 +250,7 @@ mod tests {
     /// Helper to build a test server with docs and resolver populated.
     /// entries: &[("/path.md", "uuid", "content")]
     /// All docs go into folder0 (Lens/).
-    fn build_test_server(entries: &[(&str, &str, &str)]) -> Arc<Server> {
+    async fn build_test_server(entries: &[(&str, &str, &str)]) -> Arc<Server> {
         let server = Server::new_for_test();
 
         // Create filemeta entries
@@ -264,25 +265,12 @@ mod tests {
         let resolver = server.doc_resolver();
         resolver.update_folder_from_doc(&folder0_id(), &folder_doc);
 
-        // Insert content docs into server.docs()
-        // We need DocWithSyncKv, but for testing we use a tokio runtime to create them.
-        // Instead, we test the core grep logic via pure functions and test integration
-        // at the dispatch_tool level with real DocWithSyncKv.
-
-        // For unit tests, we create DocWithSyncKv using the async constructor with no store.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
         for (_, uuid, content) in entries {
             let doc_id = format!("{}-{}", RELAY_ID, uuid);
             let content_owned = content.to_string();
-            let dwskv = rt.block_on(async {
-                y_sweet_core::doc_sync::DocWithSyncKv::new(&doc_id, None, || (), None)
-                    .await
-                    .expect("Failed to create test DocWithSyncKv")
-            });
+            let dwskv = y_sweet_core::doc_sync::DocWithSyncKv::new(&doc_id, None, || (), None)
+                .await
+                .expect("Failed to create test DocWithSyncKv");
 
             // Write content into the Y.Doc
             {
@@ -301,18 +289,20 @@ mod tests {
 
     // === Grep Tests ===
 
-    #[test]
-    fn grep_basic_match() {
+    #[tokio::test]
+    async fn grep_basic_match() {
         let server = build_test_server(&[(
             "/Photosynthesis.md",
             "uuid-photo",
             "# Photosynthesis\nPlants use sunlight.\nThis is important.",
-        )]);
+        )])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "sunlight", "output_mode": "content"}),
         )
+        .await
         .unwrap();
 
         assert!(
@@ -322,18 +312,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_case_insensitive() {
+    #[tokio::test]
+    async fn grep_case_insensitive() {
         let server = build_test_server(&[(
             "/Test.md",
             "uuid-test",
             "Hello World\nhello world\nHELLO WORLD",
-        )]);
+        )])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "hello", "-i": true, "output_mode": "content"}),
         )
+        .await
         .unwrap();
 
         // Should match all three lines
@@ -354,34 +346,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_files_with_matches_mode() {
+    #[tokio::test]
+    async fn grep_files_with_matches_mode() {
         let server = build_test_server(&[
             ("/A.md", "uuid-a", "apple banana"),
             ("/B.md", "uuid-b", "cherry date"),
-        ]);
+        ])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "apple", "output_mode": "files_with_matches"}),
         )
+        .await
         .unwrap();
 
         assert_eq!(result.trim(), "Lens/A.md");
     }
 
-    #[test]
-    fn grep_count_mode() {
+    #[tokio::test]
+    async fn grep_count_mode() {
         let server = build_test_server(&[(
             "/Multi.md",
             "uuid-multi",
             "apple\nbanana\napple pie\ncherry apple",
-        )]);
+        )])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "apple", "output_mode": "count"}),
         )
+        .await
         .unwrap();
 
         assert!(
@@ -391,15 +387,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_context_lines() {
+    #[tokio::test]
+    async fn grep_context_lines() {
         let server =
-            build_test_server(&[("/Ctx.md", "uuid-ctx", "line1\nline2\nMATCH\nline4\nline5")]);
+            build_test_server(&[("/Ctx.md", "uuid-ctx", "line1\nline2\nMATCH\nline4\nline5")])
+                .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "MATCH", "output_mode": "content", "-C": 1}),
         )
+        .await
         .unwrap();
 
         assert!(
@@ -419,18 +417,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_after_context() {
+    #[tokio::test]
+    async fn grep_after_context() {
         let server = build_test_server(&[(
             "/After.md",
             "uuid-after",
             "before\nMATCH\nafter1\nafter2\nafter3",
-        )]);
+        )])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "MATCH", "output_mode": "content", "-A": 2}),
         )
+        .await
         .unwrap();
 
         assert!(
@@ -455,18 +455,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_before_context() {
+    #[tokio::test]
+    async fn grep_before_context() {
         let server = build_test_server(&[(
             "/Before.md",
             "uuid-before",
             "before1\nbefore2\nMATCH\nafter",
-        )]);
+        )])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "MATCH", "output_mode": "content", "-B": 1}),
         )
+        .await
         .unwrap();
 
         assert!(
@@ -486,8 +488,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_path_scope() {
+    #[tokio::test]
+    async fn grep_path_scope() {
         // Build server with two folders
         let server = Server::new_for_test();
         let folder0_uuid = "aaaa0000-0000-0000-0000-000000000000";
@@ -504,22 +506,15 @@ mod tests {
         resolver.update_folder_from_doc(&folder0_doc_id, &folder0);
         resolver.update_folder_from_doc(&folder1_doc_id, &folder1);
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
         for (uuid, content) in &[
             ("uuid-a", "target word here"),
             ("uuid-b", "target word there"),
         ] {
             let doc_id = format!("{}-{}", RELAY_ID, uuid);
             let content_owned = content.to_string();
-            let dwskv = rt.block_on(async {
-                y_sweet_core::doc_sync::DocWithSyncKv::new(&doc_id, None, || (), None)
-                    .await
-                    .unwrap()
-            });
+            let dwskv = y_sweet_core::doc_sync::DocWithSyncKv::new(&doc_id, None, || (), None)
+                .await
+                .unwrap();
             {
                 let awareness = dwskv.awareness();
                 let mut guard = awareness.write().unwrap();
@@ -535,6 +530,7 @@ mod tests {
             &server,
             &json!({"pattern": "target", "path": "Lens", "output_mode": "files_with_matches"}),
         )
+        .await
         .unwrap();
 
         assert!(
@@ -549,27 +545,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_no_matches() {
-        let server = build_test_server(&[("/Doc.md", "uuid-doc", "nothing special here")]);
+    #[tokio::test]
+    async fn grep_no_matches() {
+        let server = build_test_server(&[("/Doc.md", "uuid-doc", "nothing special here")]).await;
 
         let result = execute(
             &server,
             &json!({"pattern": "ZZZZNOTFOUND", "output_mode": "content"}),
         )
+        .await
         .unwrap();
 
         assert_eq!(result, "No matches found.");
     }
 
-    #[test]
-    fn grep_invalid_regex() {
-        let server = build_test_server(&[("/Doc.md", "uuid-doc", "some content")]);
+    #[tokio::test]
+    async fn grep_invalid_regex() {
+        let server = build_test_server(&[("/Doc.md", "uuid-doc", "some content")]).await;
 
         let result = execute(
             &server,
             &json!({"pattern": "[invalid", "output_mode": "content"}),
-        );
+        )
+        .await;
 
         assert!(result.is_err(), "Invalid regex should return error");
         assert!(
@@ -578,18 +576,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_head_limit() {
+    #[tokio::test]
+    async fn grep_head_limit() {
         let server = build_test_server(&[
             ("/A.md", "uuid-a", "target line"),
             ("/B.md", "uuid-b", "target line"),
             ("/C.md", "uuid-c", "target line"),
-        ]);
+        ])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "target", "output_mode": "files_with_matches", "head_limit": 1}),
         )
+        .await
         .unwrap();
 
         let lines: Vec<&str> = result.lines().collect();
@@ -601,17 +601,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn grep_multiple_files() {
+    #[tokio::test]
+    async fn grep_multiple_files() {
         let server = build_test_server(&[
             ("/Zebra.md", "uuid-z", "common word"),
             ("/Alpha.md", "uuid-a", "common word"),
-        ]);
+        ])
+        .await;
 
         let result = execute(
             &server,
             &json!({"pattern": "common", "output_mode": "files_with_matches"}),
         )
+        .await
         .unwrap();
 
         let lines: Vec<&str> = result.lines().collect();

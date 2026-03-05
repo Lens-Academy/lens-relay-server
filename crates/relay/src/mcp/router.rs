@@ -12,7 +12,7 @@ use crate::server::Server;
 
 /// Dispatch a JSON-RPC request to the appropriate handler.
 /// Returns the response and an optional new session ID (set only for initialize).
-pub fn dispatch_request(
+pub async fn dispatch_request(
     server: &Arc<Server>,
     session_id: Option<&str>,
     request: &JsonRpcRequest,
@@ -37,7 +37,8 @@ pub fn dispatch_request(
                     session_id.unwrap(),
                     request.id.clone(),
                     request.params.as_ref(),
-                ),
+                )
+                .await,
                 None,
             )
         }
@@ -133,7 +134,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
     success_response(id, json!({ "tools": definitions }))
 }
 
-fn handle_tools_call(
+async fn handle_tools_call(
     server: &Arc<Server>,
     session_id: &str,
     id: Value,
@@ -146,11 +147,14 @@ fn handle_tools_call(
             (name.to_string(), arguments)
         }
         None => {
-            return success_response(id, tools::dispatch_tool(server, session_id, "", &json!({})));
+            return success_response(
+                id,
+                tools::dispatch_tool(server, session_id, "", &json!({})).await,
+            );
         }
     };
 
-    let result = tools::dispatch_tool(server, session_id, &name, &arguments);
+    let result = tools::dispatch_tool(server, session_id, &name, &arguments).await;
     success_response(id, result)
 }
 
@@ -213,8 +217,8 @@ mod tests {
         Server::new_for_test()
     }
 
-    #[test]
-    fn initialize_creates_session_and_returns_capabilities() {
+    #[tokio::test]
+    async fn initialize_creates_session_and_returns_capabilities() {
         let server = test_server();
         let req = make_request(
             json!(1),
@@ -225,7 +229,7 @@ mod tests {
             })),
         );
 
-        let (resp, new_session_id) = dispatch_request(&server, None, &req);
+        let (resp, new_session_id) = dispatch_request(&server, None, &req).await;
 
         // Should return a new session ID
         let sid = new_session_id.expect("initialize should return session ID");
@@ -246,12 +250,12 @@ mod tests {
         assert!(server.mcp_sessions.get_session(&sid).is_some());
     }
 
-    #[test]
-    fn ping_returns_empty_result() {
+    #[tokio::test]
+    async fn ping_returns_empty_result() {
         let server = test_server();
         let req = make_request(json!(2), "ping", None);
 
-        let (resp, new_session_id) = dispatch_request(&server, None, &req);
+        let (resp, new_session_id) = dispatch_request(&server, None, &req).await;
 
         assert!(new_session_id.is_none());
         assert_eq!(resp.id, json!(2));
@@ -259,8 +263,8 @@ mod tests {
         assert_eq!(resp.result.unwrap(), json!({}));
     }
 
-    #[test]
-    fn tools_list_returns_seven_tools() {
+    #[tokio::test]
+    async fn tools_list_returns_seven_tools() {
         let server = test_server();
         let req = make_request(json!(3), "tools/list", None);
 
@@ -270,7 +274,7 @@ mod tests {
             .create_session("2025-03-26".into(), None);
         server.mcp_sessions.mark_initialized(&sid);
 
-        let (resp, new_session_id) = dispatch_request(&server, Some(&sid), &req);
+        let (resp, new_session_id) = dispatch_request(&server, Some(&sid), &req).await;
 
         assert!(new_session_id.is_none());
         assert_eq!(resp.id, json!(3));
@@ -295,8 +299,8 @@ mod tests {
         assert!(names.contains(&"move_document"));
     }
 
-    #[test]
-    fn tools_call_without_session_returns_error() {
+    #[tokio::test]
+    async fn tools_call_without_session_returns_error() {
         let server = test_server();
         let req = make_request(
             json!(4),
@@ -304,7 +308,7 @@ mod tests {
             Some(json!({"name": "read", "arguments": {"file_path": "test"}})),
         );
 
-        let (resp, _) = dispatch_request(&server, None, &req);
+        let (resp, _) = dispatch_request(&server, None, &req).await;
 
         assert!(resp.result.is_none());
         let err = resp.error.expect("should have error");
@@ -316,8 +320,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tools_call_unknown_tool_returns_tool_error() {
+    #[tokio::test]
+    async fn tools_call_unknown_tool_returns_tool_error() {
         let server = test_server();
         let sid = server
             .mcp_sessions
@@ -330,7 +334,7 @@ mod tests {
             Some(json!({"name": "nonexistent_tool", "arguments": {"session_id": &sid}})),
         );
 
-        let (resp, _) = dispatch_request(&server, Some(&sid), &req);
+        let (resp, _) = dispatch_request(&server, Some(&sid), &req).await;
 
         // Should be a successful JSON-RPC response with isError in the result
         assert!(resp.error.is_none());
@@ -340,12 +344,12 @@ mod tests {
         assert!(text.contains("Unknown tool"));
     }
 
-    #[test]
-    fn unknown_method_returns_method_not_found() {
+    #[tokio::test]
+    async fn unknown_method_returns_method_not_found() {
         let server = test_server();
         let req = make_request(json!(6), "foo/bar", None);
 
-        let (resp, new_session_id) = dispatch_request(&server, None, &req);
+        let (resp, new_session_id) = dispatch_request(&server, None, &req).await;
 
         assert!(new_session_id.is_none());
         assert!(resp.result.is_none());
@@ -376,8 +380,8 @@ mod tests {
         handle_notification(sessions, None, &notif);
     }
 
-    #[test]
-    fn tools_call_with_uninitialized_session_returns_error() {
+    #[tokio::test]
+    async fn tools_call_with_uninitialized_session_returns_error() {
         let server = test_server();
         let sid = server
             .mcp_sessions
@@ -390,7 +394,7 @@ mod tests {
             Some(json!({"name": "read", "arguments": {}})),
         );
 
-        let (resp, _) = dispatch_request(&server, Some(&sid), &req);
+        let (resp, _) = dispatch_request(&server, Some(&sid), &req).await;
 
         assert!(resp.result.is_none());
         let err = resp.error.expect("should have error");
@@ -402,8 +406,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read_records_doc_in_session() {
+    #[tokio::test]
+    async fn read_records_doc_in_session() {
         use std::collections::HashMap;
         use yrs::{Any, Doc, Map, Text, Transact, WriteTxn};
 
@@ -436,15 +440,10 @@ mod tests {
             .update_folder_from_doc(&folder_doc_id, &folder_doc);
 
         // Create content DocWithSyncKv
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let dwskv = rt.block_on(async {
+        let dwskv =
             y_sweet_core::doc_sync::DocWithSyncKv::new(&content_doc_id, None, || (), None)
                 .await
-                .unwrap()
-        });
+                .unwrap();
         {
             let awareness = dwskv.awareness();
             let mut guard = awareness.write().unwrap();
@@ -474,7 +473,7 @@ mod tests {
                 json!({"name": "read", "arguments": {"file_path": "Lens/TestDoc.md", "session_id": &sid}}),
             ),
         );
-        let (resp, _) = dispatch_request(&server, Some(&sid), &req);
+        let (resp, _) = dispatch_request(&server, Some(&sid), &req).await;
         assert!(resp.error.is_none(), "read should succeed");
 
         // Verify read_docs now contains the doc_id
@@ -489,8 +488,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_then_edit_via_session_id_argument() {
+    #[tokio::test]
+    async fn read_then_edit_via_session_id_argument() {
         use std::collections::HashMap;
         use yrs::{Any, Doc, Map, Text, Transact, WriteTxn};
 
@@ -521,15 +520,10 @@ mod tests {
             .doc_resolver()
             .update_folder_from_doc(&folder_doc_id, &folder_doc);
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let dwskv = rt.block_on(async {
+        let dwskv =
             y_sweet_core::doc_sync::DocWithSyncKv::new(&content_doc_id, None, || (), None)
                 .await
-                .unwrap()
-        });
+                .unwrap();
         {
             let awareness = dwskv.awareness();
             let mut guard = awareness.write().unwrap();
@@ -551,7 +545,7 @@ mod tests {
             "tools/call",
             Some(json!({"name": "create_session", "arguments": {}})),
         );
-        let (create_resp, _) = dispatch_request(&server, Some(&transport_sid), &create_req);
+        let (create_resp, _) = dispatch_request(&server, Some(&transport_sid), &create_req).await;
         assert!(create_resp.error.is_none(), "create_session should succeed");
         let create_result = create_resp.result.unwrap();
         let session_id = create_result["content"][0]["text"].as_str().unwrap();
@@ -564,7 +558,7 @@ mod tests {
                 json!({"name": "read", "arguments": {"file_path": "Lens/EditTest.md", "session_id": session_id}}),
             ),
         );
-        let (read_resp, _) = dispatch_request(&server, Some(&transport_sid), &read_req);
+        let (read_resp, _) = dispatch_request(&server, Some(&transport_sid), &read_req).await;
         assert!(read_resp.error.is_none(), "read should succeed");
 
         // Verify read response does NOT contain [session: ...] anymore
@@ -596,7 +590,7 @@ mod tests {
             })),
         );
 
-        let (edit_resp, _) = dispatch_request(&server, Some(&transport_sid2), &edit_req);
+        let (edit_resp, _) = dispatch_request(&server, Some(&transport_sid2), &edit_req).await;
         assert!(
             edit_resp.error.is_none(),
             "edit should succeed at protocol level"
@@ -610,8 +604,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn create_session_returns_session_id() {
+    #[tokio::test]
+    async fn create_session_returns_session_id() {
         let server = test_server();
 
         // Create and initialize transport session
@@ -626,7 +620,7 @@ mod tests {
             Some(json!({"name": "create_session", "arguments": {}})),
         );
 
-        let (resp, _) = dispatch_request(&server, Some(&sid), &req);
+        let (resp, _) = dispatch_request(&server, Some(&sid), &req).await;
         assert!(resp.error.is_none(), "create_session should succeed");
 
         let result = resp.result.unwrap();

@@ -7,7 +7,7 @@ use y_sweet_core::link_parser;
 use yrs::{GetString, Map, ReadTxn, Transact};
 
 /// Execute the `get_links` tool: return backlinks and forward links for a document.
-pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String> {
+pub async fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String> {
     let file_path = arguments
         .get("file_path")
         .and_then(|v| v.as_str())
@@ -19,10 +19,10 @@ pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String
         .ok_or_else(|| format!("Error: Document not found: {}", file_path))?;
 
     // --- Backlinks ---
-    let backlink_paths = read_backlinks(server, &doc_info.folder_doc_id, &doc_info.uuid);
+    let backlink_paths = read_backlinks(server, &doc_info.folder_doc_id, &doc_info.uuid).await;
 
     // --- Forward links ---
-    let forward_link_paths = read_forward_links(server, &doc_info.doc_id);
+    let forward_link_paths = read_forward_links(server, &doc_info.doc_id).await;
 
     // Format output
     let mut output = String::new();
@@ -48,7 +48,11 @@ pub fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, String
 }
 
 /// Read backlinks for a document UUID from the folder doc's backlinks_v0 map.
-fn read_backlinks(server: &Arc<Server>, folder_doc_id: &str, uuid: &str) -> Vec<String> {
+async fn read_backlinks(server: &Arc<Server>, folder_doc_id: &str, uuid: &str) -> Vec<String> {
+    // Reload from storage if GC evicted the doc
+    if server.ensure_doc_loaded(folder_doc_id).await.is_err() {
+        return Vec::new();
+    }
     // Read backlink UUIDs into owned Vec, then drop all guards
     let backlink_uuids: Vec<String> = {
         let Some(doc_ref) = server.docs().get(folder_doc_id) else {
@@ -76,7 +80,11 @@ fn read_backlinks(server: &Arc<Server>, folder_doc_id: &str, uuid: &str) -> Vec<
 
 /// Read forward links by extracting wikilinks from content and resolving them
 /// using the virtual tree model (same algorithm as the backend link indexer).
-fn read_forward_links(server: &Arc<Server>, doc_id: &str) -> Vec<String> {
+async fn read_forward_links(server: &Arc<Server>, doc_id: &str) -> Vec<String> {
+    // Reload from storage if GC evicted the doc
+    if server.ensure_doc_loaded(doc_id).await.is_err() {
+        return Vec::new();
+    }
     // Read content into owned String, then drop all guards
     let content: String = {
         let Some(doc_ref) = server.docs().get(doc_id) else {

@@ -7,7 +7,7 @@ use yrs::{GetString, ReadTxn, Text, Transact, WriteTxn};
 ///
 /// The edit is wrapped in CriticMarkup format `{--old--}{++new++}` so human
 /// collaborators can review and accept/reject the AI's proposed change.
-pub fn execute(
+pub async fn execute(
     server: &Arc<Server>,
     session_id: &str,
     arguments: &Value,
@@ -49,7 +49,13 @@ pub fn execute(
         // Drop session guard before accessing Y.Doc
     }
 
-    // 4. Read content and find old_string
+    // 4. Reload from storage if GC evicted the doc
+    server
+        .ensure_doc_loaded(&doc_info.doc_id)
+        .await
+        .map_err(|e| format!("Error: Failed to load document {}: {}", file_path, e))?;
+
+    // 5. Read content and find old_string
     let content = {
         let doc_ref = server
             .docs()
@@ -170,7 +176,7 @@ mod tests {
     }
 
     /// Create a test server with docs and a session with the doc marked as read.
-    fn build_test_server(entries: &[(&str, &str, &str)]) -> Arc<Server> {
+    async fn build_test_server(entries: &[(&str, &str, &str)]) -> Arc<Server> {
         let server = Server::new_for_test();
 
         let filemeta_entries: Vec<(&str, &str)> = entries
@@ -183,19 +189,12 @@ mod tests {
         let resolver = server.doc_resolver();
         resolver.update_folder_from_doc(&folder0_id(), &folder_doc);
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
         for (_, uuid, content) in entries {
             let doc_id = format!("{}-{}", RELAY_ID, uuid);
             let content_owned = content.to_string();
-            let dwskv = rt.block_on(async {
-                y_sweet_core::doc_sync::DocWithSyncKv::new(&doc_id, None, || (), None)
-                    .await
-                    .expect("Failed to create test DocWithSyncKv")
-            });
+            let dwskv = y_sweet_core::doc_sync::DocWithSyncKv::new(&doc_id, None, || (), None)
+                .await
+                .expect("Failed to create test DocWithSyncKv");
 
             {
                 let awareness = dwskv.awareness();
@@ -245,9 +244,9 @@ mod tests {
 
     // === Edit Tests ===
 
-    #[test]
-    fn edit_basic_replacement() {
-        let server = build_test_server(&[("/Hello.md", "uuid-hello", "say hello to all")]);
+    #[tokio::test]
+    async fn edit_basic_replacement() {
+        let server = build_test_server(&[("/Hello.md", "uuid-hello", "say hello to all")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-hello");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -255,7 +254,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Hello.md", "old_string": "hello", "new_string": "world"}),
-        );
+        )
+        .await;
 
         assert!(result.is_ok(), "edit should succeed, got: {:?}", result);
 
@@ -294,9 +294,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_read_before_edit_enforced() {
-        let server = build_test_server(&[("/Doc.md", "uuid-doc", "some content")]);
+    #[tokio::test]
+    async fn edit_read_before_edit_enforced() {
+        let server = build_test_server(&[("/Doc.md", "uuid-doc", "some content")]).await;
         // Session WITHOUT the doc in read_docs
         let sid = setup_session_no_reads(&server);
 
@@ -304,7 +304,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Doc.md", "old_string": "some", "new_string": "any"}),
-        );
+        )
+        .await;
 
         assert!(result.is_err(), "should reject edit on unread doc");
         let err = result.unwrap_err();
@@ -315,9 +316,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_old_string_not_found() {
-        let server = build_test_server(&[("/Doc.md", "uuid-doc", "actual content here")]);
+    #[tokio::test]
+    async fn edit_old_string_not_found() {
+        let server = build_test_server(&[("/Doc.md", "uuid-doc", "actual content here")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-doc");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -325,7 +326,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Doc.md", "old_string": "nonexistent", "new_string": "replacement"}),
-        );
+        )
+        .await;
 
         assert!(result.is_err(), "should reject when old_string not found");
         let err = result.unwrap_err();
@@ -336,9 +338,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_old_string_not_unique() {
-        let server = build_test_server(&[("/Cats.md", "uuid-cats", "the cat sat on the cat")]);
+    #[tokio::test]
+    async fn edit_old_string_not_unique() {
+        let server = build_test_server(&[("/Cats.md", "uuid-cats", "the cat sat on the cat")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-cats");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -346,7 +348,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Cats.md", "old_string": "the cat", "new_string": "a dog"}),
-        );
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -360,16 +363,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_document_not_found() {
-        let server = build_test_server(&[]);
+    #[tokio::test]
+    async fn edit_document_not_found() {
+        let server = build_test_server(&[]).await;
         let sid = setup_session_no_reads(&server);
 
         let result = execute(
             &server,
             &sid,
             &json!({"file_path": "Nonexistent/Doc.md", "old_string": "hello", "new_string": "world"}),
-        );
+        )
+        .await;
 
         assert!(result.is_err(), "should reject when document not found");
         let err = result.unwrap_err();
@@ -380,9 +384,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_missing_parameters() {
-        let server = build_test_server(&[("/Doc.md", "uuid-doc", "content")]);
+    #[tokio::test]
+    async fn edit_missing_parameters() {
+        let server = build_test_server(&[("/Doc.md", "uuid-doc", "content")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-doc");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -391,7 +395,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Doc.md", "new_string": "world"}),
-        );
+        )
+        .await;
         assert!(result.is_err(), "missing old_string should error");
         assert!(
             result.unwrap_err().contains("old_string"),
@@ -403,7 +408,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Doc.md", "old_string": "content"}),
-        );
+        )
+        .await;
         assert!(result.is_err(), "missing new_string should error");
         assert!(
             result.unwrap_err().contains("new_string"),
@@ -415,7 +421,8 @@ mod tests {
             &server,
             &sid,
             &json!({"old_string": "content", "new_string": "replacement"}),
-        );
+        )
+        .await;
         assert!(result.is_err(), "missing file_path should error");
         assert!(
             result.unwrap_err().contains("file_path"),
@@ -423,9 +430,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_preserves_surrounding_content() {
-        let server = build_test_server(&[("/Lines.md", "uuid-lines", "line 1\nline 2\nline 3")]);
+    #[tokio::test]
+    async fn edit_preserves_surrounding_content() {
+        let server = build_test_server(&[("/Lines.md", "uuid-lines", "line 1\nline 2\nline 3")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-lines");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -433,7 +440,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Lines.md", "old_string": "line 2", "new_string": "modified line 2"}),
-        );
+        )
+        .await;
 
         assert!(result.is_ok(), "edit should succeed, got: {:?}", result);
 
@@ -455,10 +463,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_multiline_old_string() {
+    #[tokio::test]
+    async fn edit_multiline_old_string() {
         let server =
-            build_test_server(&[("/Multi.md", "uuid-multi", "line 1\nline 2\nline 3\nline 4")]);
+            build_test_server(&[("/Multi.md", "uuid-multi", "line 1\nline 2\nline 3\nline 4")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-multi");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -466,7 +474,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Multi.md", "old_string": "line 2\nline 3", "new_string": "replaced lines"}),
-        );
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -497,9 +506,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_empty_new_string() {
-        let server = build_test_server(&[("/Del.md", "uuid-del", "keep delete me keep")]);
+    #[tokio::test]
+    async fn edit_empty_new_string() {
+        let server = build_test_server(&[("/Del.md", "uuid-del", "keep delete me keep")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-del");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -507,7 +516,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Del.md", "old_string": "delete me", "new_string": ""}),
-        );
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -533,9 +543,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn edit_success_message() {
-        let server = build_test_server(&[("/Msg.md", "uuid-msg", "hello world")]);
+    #[tokio::test]
+    async fn edit_success_message() {
+        let server = build_test_server(&[("/Msg.md", "uuid-msg", "hello world")]).await;
         let doc_id = format!("{}-{}", RELAY_ID, "uuid-msg");
         let sid = setup_session_with_read(&server, &doc_id);
 
@@ -543,7 +553,8 @@ mod tests {
             &server,
             &sid,
             &json!({"file_path": "Lens/Msg.md", "old_string": "hello", "new_string": "goodbye"}),
-        );
+        )
+        .await;
 
         assert!(result.is_ok(), "edit should succeed");
         let msg = result.unwrap();
