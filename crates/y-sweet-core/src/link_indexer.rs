@@ -251,6 +251,39 @@ pub fn compute_relative_wikilink(source_virtual_path: &str, target_virtual_path:
     parts.join("/")
 }
 
+/// Snapshot a single folder doc's filemeta into VirtualEntry list.
+///
+/// Used by `index_document` to read folder metadata under a short-lived lock
+/// without holding locks on other folders simultaneously.
+/// Returns (folder_name, entries).
+pub fn snapshot_folder_entries(
+    folder_doc: &Doc,
+    folder_doc_id: &str,
+    folder_idx: usize,
+) -> (String, Vec<VirtualEntry>) {
+    let folder_name = read_folder_name(folder_doc, folder_doc_id);
+    let txn = folder_doc.transact();
+    let mut entries = Vec::new();
+    if let Some(filemeta) = txn.get_map("filemeta_v0") {
+        for (path, value) in filemeta.iter(&txn) {
+            let entry_type = extract_type_from_filemeta_entry(&value, &txn)
+                .unwrap_or_else(|| "unknown".to_string());
+            let id = match extract_id_from_filemeta_entry(&value, &txn) {
+                Some(id) => id,
+                None => continue,
+            };
+            let virtual_path = format!("/{}{}", folder_name, path);
+            entries.push(VirtualEntry {
+                virtual_path,
+                entry_type,
+                id,
+                folder_idx,
+            });
+        }
+    }
+    (folder_name, entries)
+}
+
 /// Build a flat list of virtual entries from multiple folder docs.
 ///
 /// Virtual paths are constructed as "/{folder_name}{filemeta_path}",
@@ -1648,6 +1681,38 @@ mod tests {
         } else {
             vec![]
         }
+    }
+
+    // === snapshot_folder_entries tests ===
+
+    #[test]
+    fn snapshot_folder_entries_matches_build_virtual_entries() {
+        let folder1 = create_folder_doc(&[("/Notes.md", "uuid-notes"), ("/Ideas.md", "uuid-ideas")]);
+        set_folder_name(&folder1, "Lens");
+        let folder2 = create_folder_doc(&[("/Welcome.md", "uuid-welcome")]);
+        set_folder_name(&folder2, "Edu");
+
+        // Snapshot one-at-a-time
+        let mut snapshot_entries = Vec::new();
+        let (name1, entries1) = snapshot_folder_entries(&folder1, "folder1", 0);
+        snapshot_entries.extend(entries1);
+        let (name2, entries2) = snapshot_folder_entries(&folder2, "folder2", 1);
+        snapshot_entries.extend(entries2);
+
+        // Batch (existing function)
+        let folder_refs: Vec<&Doc> = vec![&folder1, &folder2];
+        let names = vec![name1.as_str(), name2.as_str()];
+        let batch_entries = build_virtual_entries(&folder_refs, &names);
+
+        // Same number of entries
+        assert_eq!(snapshot_entries.len(), batch_entries.len());
+
+        // Same content (sort by id for deterministic comparison)
+        let mut snap_sorted: Vec<_> = snapshot_entries.iter().map(|e| (&e.id, &e.virtual_path, e.folder_idx)).collect();
+        snap_sorted.sort();
+        let mut batch_sorted: Vec<_> = batch_entries.iter().map(|e| (&e.id, &e.virtual_path, e.folder_idx)).collect();
+        batch_sorted.sort();
+        assert_eq!(snap_sorted, batch_sorted);
     }
 
     // === Unit+1 Tests (RED — these FAIL with stub index_content_into_folder) ===
