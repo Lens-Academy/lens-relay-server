@@ -314,6 +314,36 @@ pub fn build_virtual_entries(folder_docs: &[&Doc], folder_names: &[&str]) -> Vec
     entries
 }
 
+/// Resolve wikilinks against virtual entries and group target UUIDs by folder index.
+///
+/// Pure computation — no Doc access or locks needed.
+/// Returns a Vec of HashSets, one per folder, containing target UUIDs.
+pub fn compute_backlink_targets(
+    source_uuid: &str,
+    link_names: &[String],
+    entries: &[VirtualEntry],
+    num_folders: usize,
+) -> Vec<HashSet<String>> {
+    let source_virtual_path: Option<String> = entries
+        .iter()
+        .find(|e| e.id == source_uuid)
+        .map(|e| e.virtual_path.clone());
+
+    let mut resolved: Vec<(String, usize)> = Vec::new();
+    for name in link_names {
+        if let Some(entry) = resolve_in_virtual_tree(name, source_virtual_path.as_deref(), entries)
+        {
+            resolved.push((entry.id.clone(), entry.folder_idx));
+        }
+    }
+
+    let mut targets_per_folder: Vec<HashSet<String>> = vec![HashSet::new(); num_folders];
+    for (uuid, fi) in &resolved {
+        targets_per_folder[*fi].insert(uuid.clone());
+    }
+    targets_per_folder
+}
+
 // ---------------------------------------------------------------------------
 // Folder doc scanning helpers
 // ---------------------------------------------------------------------------
@@ -4366,5 +4396,62 @@ mod tests {
                 "incoming backlink should be updated"
             );
         }
+    }
+
+    #[test]
+    fn compute_backlink_targets_groups_by_folder() {
+        // Two folders: Lens has Notes and Ideas, Edu has Welcome
+        let entries = vec![
+            VirtualEntry {
+                virtual_path: "/Lens/Notes.md".to_string(),
+                entry_type: "markdown".to_string(),
+                id: "uuid-notes".to_string(),
+                folder_idx: 0,
+            },
+            VirtualEntry {
+                virtual_path: "/Lens/Ideas.md".to_string(),
+                entry_type: "markdown".to_string(),
+                id: "uuid-ideas".to_string(),
+                folder_idx: 0,
+            },
+            VirtualEntry {
+                virtual_path: "/Edu/Welcome.md".to_string(),
+                entry_type: "markdown".to_string(),
+                id: "uuid-welcome".to_string(),
+                folder_idx: 1,
+            },
+        ];
+
+        let link_names = vec!["Ideas".to_string(), "../Edu/Welcome".to_string()];
+        let targets = compute_backlink_targets(
+            "uuid-notes",
+            &link_names,
+            &entries,
+            2, // 2 folders
+        );
+
+        assert_eq!(targets.len(), 2);
+        // Folder 0 (Lens): Ideas resolved (relative match within same folder)
+        assert!(targets[0].contains("uuid-ideas"));
+        assert_eq!(targets[0].len(), 1);
+        // Folder 1 (Edu): Welcome resolved (relative path crosses folders)
+        assert!(targets[1].contains("uuid-welcome"));
+        assert_eq!(targets[1].len(), 1);
+    }
+
+    #[test]
+    fn compute_backlink_targets_empty_links() {
+        let entries = vec![
+            VirtualEntry {
+                virtual_path: "/Lens/Notes.md".to_string(),
+                entry_type: "markdown".to_string(),
+                id: "uuid-notes".to_string(),
+                folder_idx: 0,
+            },
+        ];
+
+        let targets = compute_backlink_targets("uuid-notes", &[], &entries, 1);
+        assert_eq!(targets.len(), 1);
+        assert!(targets[0].is_empty());
     }
 }
