@@ -159,6 +159,68 @@ class LinkWidget extends WidgetType {
 }
 
 /**
+ * ImageWidget - Renders ![alt](url) as an inline image preview
+ */
+class ImageWidget extends WidgetType {
+  private alt: string;
+  private url: string;
+
+  constructor(alt: string, url: string) {
+    super();
+    this.alt = alt;
+    this.url = url;
+  }
+
+  toDOM(): HTMLElement {
+    const container = document.createElement('span');
+    container.className = 'cm-image-widget';
+
+    // Security: only allow http/https URLs
+    if (!/^https?:\/\//i.test(this.url)) {
+      container.classList.add('cm-image-error');
+      const fallback = document.createElement('span');
+      fallback.className = 'cm-image-fallback';
+      fallback.textContent = this.alt || this.url;
+      container.appendChild(fallback);
+      return container;
+    }
+
+    const img = document.createElement('img');
+    img.alt = this.alt;
+    img.className = 'cm-image-preview';
+    img.src = this.url;
+
+    // Loading: hide img until loaded, show placeholder
+    img.style.display = 'none';
+    const placeholder = document.createElement('span');
+    placeholder.className = 'cm-image-loading';
+    placeholder.textContent = this.alt || 'Loading image…';
+    container.appendChild(placeholder);
+
+    img.onload = () => {
+      placeholder.remove();
+      img.style.display = '';
+    };
+    img.onerror = () => {
+      placeholder.remove();
+      img.remove();
+      container.classList.add('cm-image-error');
+      const fallback = document.createElement('span');
+      fallback.className = 'cm-image-fallback';
+      fallback.textContent = `Image not found: ${this.alt || this.url}`;
+      container.appendChild(fallback);
+    };
+
+    container.appendChild(img);
+    return container;
+  }
+
+  eq(other: ImageWidget): boolean {
+    return this.alt === other.alt && this.url === other.url;
+  }
+}
+
+/**
  * BulletWidget - Renders bullet list markers as a dot character
  */
 class BulletWidget extends WidgetType {
@@ -351,6 +413,24 @@ const livePreviewPlugin = ViewPlugin.fromClass(
                     to: node.to,
                     deco: Decoration.replace({
                       widget: new LinkWidget(linkText, linkUrl),
+                    }),
+                  });
+                }
+              }
+            }
+
+            // Image: replace ![alt](url) with inline preview when cursor not on it
+            if (node.name === 'Image') {
+              if (node.node.parent?.name === 'Link') return;
+              if (!selectionIntersects(selection, node.from, node.to)) {
+                const content = view.state.doc.sliceString(node.from, node.to);
+                const match = content.match(/^!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)$/);
+                if (match) {
+                  decorations.push({
+                    from: node.from,
+                    to: node.to,
+                    deco: Decoration.replace({
+                      widget: new ImageWidget(match[1], match[2]),
                     }),
                   });
                 }

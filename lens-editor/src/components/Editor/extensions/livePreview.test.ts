@@ -607,6 +607,111 @@ describe('livePreview - fenced code blocks', () => {
   });
 });
 
+describe('livePreview - inline images', () => {
+  let cleanup: () => void;
+
+  afterEach(() => {
+    if (cleanup) cleanup();
+  });
+
+  it('replaces ![alt](url) with image widget when cursor outside', () => {
+    const content = '![photo](https://example.com/img.png) more';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(true);
+  });
+
+  it('shows raw markdown when cursor is inside image syntax', () => {
+    const content = '![photo](https://example.com/img.png) more';
+    // Cursor inside the image syntax
+    const { view, cleanup: c } = createTestEditor(content, 5);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(false);
+  });
+
+  it('widget contains img element with correct src and alt', () => {
+    const content = '![my alt](https://example.com/pic.jpg) end';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    const img = view.contentDOM.querySelector('.cm-image-preview') as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img!.src).toBe('https://example.com/pic.jpg');
+    expect(img!.alt).toBe('my alt');
+  });
+
+  it('handles empty alt text ![](url)', () => {
+    const content = '![](https://example.com/img.png) end';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(true);
+    const img = view.contentDOM.querySelector('.cm-image-preview') as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img!.alt).toBe('');
+  });
+
+  it('shows fallback for non-http URLs', () => {
+    const content = '![alt](data:image/png;base64,abc) end';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(true);
+    expect(hasClass(view, 'cm-image-error')).toBe(true);
+    // No actual img element should be rendered
+    const img = view.contentDOM.querySelector('.cm-image-preview');
+    expect(img).toBeNull();
+  });
+
+  it('does not interfere with regular links', () => {
+    const content = '[text](https://example.com) end';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(false);
+    expect(hasClass(view, 'cm-link-widget')).toBe(true);
+  });
+
+  it('does not interfere with wikilink embeds', () => {
+    const content = '![[My Page]] end';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(false);
+    expect(hasClass(view, 'cm-wikilink-widget')).toBe(true);
+  });
+
+  it('cursor move toggles between widget and raw markdown', () => {
+    const content = '![photo](https://example.com/img.png) text';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    // Initially outside: image widget shown
+    expect(hasClass(view, 'cm-image-widget')).toBe(true);
+
+    // Move cursor inside image syntax
+    moveCursor(view, 5);
+    expect(hasClass(view, 'cm-image-widget')).toBe(false);
+
+    // Move cursor back outside
+    moveCursor(view, content.length);
+    expect(hasClass(view, 'cm-image-widget')).toBe(true);
+  });
+
+  it('handles image with title ![alt](url "title")', () => {
+    const content = '![photo](https://example.com/img.png "A title") end';
+    const { view, cleanup: c } = createTestEditor(content, content.length);
+    cleanup = c;
+
+    expect(hasClass(view, 'cm-image-widget')).toBe(true);
+    const img = view.contentDOM.querySelector('.cm-image-preview') as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img!.src).toBe('https://example.com/img.png');
+  });
+});
+
 describe('livePreview - checklists', () => {
   let cleanup: () => void;
 

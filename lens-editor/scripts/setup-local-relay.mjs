@@ -65,6 +65,8 @@ const TEST_FOLDERS = [
 
 This is a local development environment running against relay-server.
 
+![Lens Academy](https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=600&h=300&fit=crop)
+
 ## Features
 
 - **Real-time collaboration** - Open multiple tabs to see sync in action

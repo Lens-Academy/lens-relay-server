@@ -112,6 +112,37 @@
   border-bottom-color: #9ca3af;
 }
 
+/* Image preview widget */
+.cm-image-widget {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0.25em 0;
+  line-height: 0;
+}
+.cm-image-preview {
+  max-width: 100%;
+  max-height: 500px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+.cm-image-loading {
+  display: inline-block;
+  padding: 0.5em 1em;
+  color: #9ca3af;
+  font-style: italic;
+  font-size: 0.875em;
+  line-height: normal;
+}
+.cm-image-error .cm-image-fallback {
+  display: inline-block;
+  padding: 0.25em 0.5em;
+  color: #ef4444;
+  font-size: 0.875em;
+  line-height: normal;
+  border: 1px dashed #fca5a5;
+  border-radius: 4px;
+}
+
 /* Wikilink autocomplete popup */
 .cm-tooltip-autocomplete {
   background: white;
