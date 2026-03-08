@@ -126,6 +126,36 @@ export function createCriticMarkupEditor(
 }
 
 /**
+ * Create an EditorView with CriticMarkup extension and a text selection range.
+ */
+export function createCriticMarkupEditorWithSelection(
+  content: string,
+  from: number,
+  to: number
+): { view: EditorView; cleanup: () => void } {
+  const state = EditorState.create({
+    doc: content,
+    selection: { anchor: from, head: to },
+    extensions: [
+      markdown(),
+      criticMarkupExtension(),
+    ],
+  });
+
+  const view = new EditorView({
+    state,
+    parent: document.body,
+  });
+
+  return {
+    view,
+    cleanup: () => {
+      view.destroy();
+    },
+  };
+}
+
+/**
  * Create an EditorView with both CriticMarkup and livePreview extensions.
  * This enables testing source mode toggling with CriticMarkup.
  */

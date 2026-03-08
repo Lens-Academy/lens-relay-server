@@ -20,10 +20,21 @@ function findRangeAtCursor(view: EditorView): CriticMarkupRange | null {
 }
 
 /**
+ * Find all CriticMarkup ranges overlapping the current selection.
+ * Returns empty array if selection is collapsed (cursor only).
+ */
+export function findRangesInSelection(view: EditorView): CriticMarkupRange[] {
+  const sel = view.state.selection.main;
+  if (sel.from === sel.to) return [];
+  const ranges = view.state.field(criticMarkupField);
+  return ranges.filter(r => r.from < sel.to && r.to > sel.from);
+}
+
+/**
  * Get the replacement text when accepting a CriticMarkup range.
  * Returns the content that should replace the entire markup.
  */
-function getAcceptReplacement(range: CriticMarkupRange): string {
+export function getAcceptReplacement(range: CriticMarkupRange): string {
   switch (range.type) {
     case 'addition':
       return range.content;
@@ -44,7 +55,7 @@ function getAcceptReplacement(range: CriticMarkupRange): string {
  * Get the replacement text when rejecting a CriticMarkup range.
  * Returns the content that should replace the entire markup.
  */
-function getRejectReplacement(range: CriticMarkupRange): string {
+export function getRejectReplacement(range: CriticMarkupRange): string {
   switch (range.type) {
     case 'addition':
       return ''; // Addition is rejected, nothing added
@@ -62,38 +73,52 @@ function getRejectReplacement(range: CriticMarkupRange): string {
 }
 
 /**
- * Accept the CriticMarkup change at cursor position.
- * Uses targeted change (only the markup range) to preserve Y.js structure.
- * Returns true if a change was accepted, false if cursor not in markup.
+ * Accept CriticMarkup changes. If a non-collapsed selection exists,
+ * accepts all ranges overlapping the selection. Otherwise accepts
+ * the single range at cursor position.
+ * Returns true if any change was accepted.
  */
 export function acceptChangeAtCursor(view: EditorView): boolean {
+  const selected = findRangesInSelection(view);
+  if (selected.length > 0) {
+    const changes = selected.map(r => ({
+      from: r.from, to: r.to, insert: getAcceptReplacement(r),
+    }));
+    view.dispatch({ changes });
+    return true;
+  }
+
   const range = findRangeAtCursor(view);
   if (!range) return false;
 
-  const replacement = getAcceptReplacement(range);
-
   view.dispatch({
-    changes: { from: range.from, to: range.to, insert: replacement },
+    changes: { from: range.from, to: range.to, insert: getAcceptReplacement(range) },
   });
-
   return true;
 }
 
 /**
- * Reject the CriticMarkup change at cursor position.
- * Uses targeted change (only the markup range) to preserve Y.js structure.
- * Returns true if a change was rejected, false if cursor not in markup.
+ * Reject CriticMarkup changes. If a non-collapsed selection exists,
+ * rejects all ranges overlapping the selection. Otherwise rejects
+ * the single range at cursor position.
+ * Returns true if any change was rejected.
  */
 export function rejectChangeAtCursor(view: EditorView): boolean {
+  const selected = findRangesInSelection(view);
+  if (selected.length > 0) {
+    const changes = selected.map(r => ({
+      from: r.from, to: r.to, insert: getRejectReplacement(r),
+    }));
+    view.dispatch({ changes });
+    return true;
+  }
+
   const range = findRangeAtCursor(view);
   if (!range) return false;
 
-  const replacement = getRejectReplacement(range);
-
   view.dispatch({
-    changes: { from: range.from, to: range.to, insert: replacement },
+    changes: { from: range.from, to: range.to, insert: getRejectReplacement(range) },
   });
-
   return true;
 }
 

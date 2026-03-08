@@ -17,7 +17,7 @@ import {
   WidgetType,
 } from '@codemirror/view';
 import type { ViewUpdate, DecorationSet } from '@codemirror/view';
-import { criticMarkupKeymap, acceptChangeAtCursor, rejectChangeAtCursor } from './criticmarkup-commands';
+import { criticMarkupKeymap, acceptChangeAtCursor, rejectChangeAtCursor, findRangesInSelection } from './criticmarkup-commands';
 import { parse, parseThreads, type CriticMarkupRange } from '../../../lib/criticmarkup-parser';
 
 // Author context - can be set externally
@@ -226,6 +226,46 @@ class AcceptRejectWidget extends WidgetType {
 }
 
 /**
+ * Widget that renders accept/reject buttons with a count badge for bulk operations.
+ * Shown when a text selection spans multiple CriticMarkup ranges.
+ */
+class BulkAcceptRejectWidget extends WidgetType {
+  constructor(private count: number) {
+    super();
+  }
+
+  toDOM(): HTMLElement {
+    const container = document.createElement('span');
+    container.className = 'cm-criticmarkup-buttons cm-criticmarkup-bulk';
+
+    const acceptBtn = document.createElement('button');
+    acceptBtn.className = 'cm-criticmarkup-accept';
+    acceptBtn.textContent = `\u2713 ${this.count}`;
+    acceptBtn.title = `Accept ${this.count} changes (Ctrl+Enter)`;
+    acceptBtn.setAttribute('aria-label', `Accept ${this.count} changes`);
+
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'cm-criticmarkup-reject';
+    rejectBtn.textContent = `\u2717 ${this.count}`;
+    rejectBtn.title = `Reject ${this.count} changes (Ctrl+Backspace)`;
+    rejectBtn.setAttribute('aria-label', `Reject ${this.count} changes`);
+
+    container.appendChild(acceptBtn);
+    container.appendChild(rejectBtn);
+
+    return container;
+  }
+
+  eq(other: BulkAcceptRejectWidget): boolean {
+    return this.count === other.count;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/**
  * ViewPlugin that applies decorations (CSS classes) to CriticMarkup ranges.
  * Decorations are rebuilt when the document changes, viewport changes, or selection changes.
  * Delimiters and metadata are always hidden; accept/reject buttons shown when cursor is inside.
@@ -234,8 +274,25 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
 
+    // Saved selection from mousedown, used for bulk accept/reject
+    // (clicking a button collapses the selection before the click handler fires)
+    private savedSelection: { from: number; to: number } | null = null;
+
     constructor(view: EditorView) {
       this.decorations = this.buildDecorations(view);
+
+      // Capture selection on mousedown before the browser collapses it
+      view.contentDOM.addEventListener('mousedown', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.classList.contains('cm-criticmarkup-accept') ||
+            target.classList.contains('cm-criticmarkup-reject')) {
+          const sel = view.state.selection.main;
+          if (sel.from !== sel.to) {
+            this.savedSelection = { from: sel.from, to: sel.to };
+            e.preventDefault(); // Prevent selection collapse
+          }
+        }
+      });
 
       // Event delegation for accept/reject button clicks and comment badge clicks
       view.contentDOM.addEventListener('click', (e) => {
@@ -243,10 +300,19 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
         if (target.classList.contains('cm-criticmarkup-accept')) {
           e.preventDefault();
           e.stopPropagation();
+          if (this.savedSelection) {
+            // Restore the selection so bulk accept works
+            view.dispatch({ selection: { anchor: this.savedSelection.from, head: this.savedSelection.to } });
+            this.savedSelection = null;
+          }
           acceptChangeAtCursor(view);
         } else if (target.classList.contains('cm-criticmarkup-reject')) {
           e.preventDefault();
           e.stopPropagation();
+          if (this.savedSelection) {
+            view.dispatch({ selection: { anchor: this.savedSelection.from, head: this.savedSelection.to } });
+            this.savedSelection = null;
+          }
           rejectChangeAtCursor(view);
         } else if (target.classList.contains('cm-comment-badge')) {
           e.preventDefault();
@@ -316,6 +382,25 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
             });
           }
         }
+      }
+
+      // Detect bulk selection: if selection spans multiple markup ranges,
+      // show a single bulk widget instead of per-range accept/reject buttons
+      const sel = selection.main;
+      const bulkRanges = sel.from !== sel.to
+        ? ranges.filter(r => r.from < sel.to && r.to > sel.from)
+        : [];
+      const isBulkSelection = bulkRanges.length > 1;
+
+      if (isBulkSelection) {
+        decorations.push({
+          from: sel.to,
+          to: sel.to,
+          deco: Decoration.widget({
+            widget: new BulkAcceptRejectWidget(bulkRanges.length),
+            side: 1,
+          }),
+        });
       }
 
       for (const range of ranges) {
@@ -426,7 +511,8 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
         }
 
         // When cursor is inside, show accept/reject buttons and ensure cursor visibility
-        if (cursorInside) {
+        // Skip per-range buttons when bulk widget is shown
+        if (cursorInside && !isBulkSelection) {
           decorations.push({
             from: range.contentTo,
             to: range.contentTo,
@@ -491,9 +577,23 @@ export const criticMarkupPlugin = ViewPlugin.fromClass(
 export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    private savedSelection: { from: number; to: number } | null = null;
 
     constructor(view: EditorView) {
       this.decorations = this.buildDecorations(view);
+
+      // Capture selection on mousedown before the browser collapses it
+      view.contentDOM.addEventListener('mousedown', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.classList.contains('cm-criticmarkup-accept') ||
+            target.classList.contains('cm-criticmarkup-reject')) {
+          const sel = view.state.selection.main;
+          if (sel.from !== sel.to) {
+            this.savedSelection = { from: sel.from, to: sel.to };
+            e.preventDefault();
+          }
+        }
+      });
 
       // Event delegation for accept/reject button clicks
       view.contentDOM.addEventListener('click', (e) => {
@@ -501,10 +601,18 @@ export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
         if (target.classList.contains('cm-criticmarkup-accept')) {
           e.preventDefault();
           e.stopPropagation();
+          if (this.savedSelection) {
+            view.dispatch({ selection: { anchor: this.savedSelection.from, head: this.savedSelection.to } });
+            this.savedSelection = null;
+          }
           acceptChangeAtCursor(view);
         } else if (target.classList.contains('cm-criticmarkup-reject')) {
           e.preventDefault();
           e.stopPropagation();
+          if (this.savedSelection) {
+            view.dispatch({ selection: { anchor: this.savedSelection.from, head: this.savedSelection.to } });
+            this.savedSelection = null;
+          }
           rejectChangeAtCursor(view);
         }
       });
@@ -523,6 +631,24 @@ export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
 
       const decorations: Array<{ from: number; to: number; deco: Decoration }> = [];
 
+      // Detect bulk selection
+      const sel = selection.main;
+      const bulkRanges = sel.from !== sel.to
+        ? ranges.filter(r => r.from < sel.to && r.to > sel.from)
+        : [];
+      const isBulkSelection = bulkRanges.length > 1;
+
+      if (isBulkSelection) {
+        decorations.push({
+          from: sel.to,
+          to: sel.to,
+          deco: Decoration.widget({
+            widget: new BulkAcceptRejectWidget(bulkRanges.length),
+            side: 1,
+          }),
+        });
+      }
+
       for (const range of ranges) {
         // Only decorate the content, not the delimiters/metadata
         decorations.push({
@@ -531,7 +657,7 @@ export const criticMarkupSourcePlugin = ViewPlugin.fromClass(
           deco: Decoration.mark({ class: TYPE_CLASSES[range.type] }),
         });
 
-        if (selectionIntersects(selection, range.from, range.to)) {
+        if (selectionIntersects(selection, range.from, range.to) && !isBulkSelection) {
           decorations.push({
             from: range.contentTo,
             to: range.contentTo,

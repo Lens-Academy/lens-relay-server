@@ -400,6 +400,15 @@
   outline-offset: 1px;
 }
 
+/* Bulk accept/reject buttons (wider to fit count) */
+.cm-criticmarkup-bulk .cm-criticmarkup-accept,
+.cm-criticmarkup-bulk .cm-criticmarkup-reject {
+  width: auto;
+  padding: 0 6px;
+  gap: 2px;
+  font-size: 11px;
+}
+
 /* Panel width animation — triggered on toggle/auto-resize */
 .sidebar-animating > div {
   transition: width 200ms ease-out;

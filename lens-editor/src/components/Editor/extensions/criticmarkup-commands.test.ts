@@ -1,6 +1,6 @@
 // src/components/Editor/extensions/criticmarkup-commands.test.ts
 import { describe, it, expect, afterEach } from 'vitest';
-import { createCriticMarkupEditor, moveCursor } from '../../../test/codemirror-helpers';
+import { createCriticMarkupEditor, createCriticMarkupEditorWithSelection, moveCursor } from '../../../test/codemirror-helpers';
 import { acceptChangeAtCursor, rejectChangeAtCursor, criticMarkupKeymap } from './criticmarkup-commands';
 
 describe('CriticMarkup Commands', () => {
@@ -114,6 +114,109 @@ describe('CriticMarkup Commands', () => {
 
       expect(result).toBe(true);
       expect(view.state.doc.toString()).toBe('hello old end');
+    });
+  });
+
+  describe('Bulk accept/reject', () => {
+    it('accepts all additions in selection', () => {
+      const content = 'hello {++foo++} mid {++bar++} end';
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, content.length);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello foo mid bar end');
+    });
+
+    it('rejects all additions in selection', () => {
+      const content = 'hello {++foo++} mid {++bar++} end';
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, content.length);
+      cleanup = c;
+
+      const result = rejectChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello  mid  end');
+    });
+
+    it('accepts mixed types (addition + deletion)', () => {
+      const content = 'hello {++added++} mid {--removed--} end';
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, content.length);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello added mid  end');
+    });
+
+    it('rejects mixed types (addition + deletion)', () => {
+      const content = 'hello {++added++} mid {--removed--} end';
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, content.length);
+      cleanup = c;
+
+      const result = rejectChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello  mid removed end');
+    });
+
+    it('accepts substitution in bulk', () => {
+      const content = 'hello {~~old~>new~~} mid {++added++} end';
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, content.length);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello new mid added end');
+    });
+
+    it('only affects ranges overlapping the selection', () => {
+      const content = 'hello {++foo++} mid {++bar++} end';
+      // Selection covers "hello {++foo++} mid" but not the second markup
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, 19);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello foo mid {++bar++} end');
+    });
+
+    it('returns false when selection covers no markup ranges', () => {
+      const content = 'hello mid {++bar++} end';
+      // Select only "hello mid" (no markup)
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 0, 9);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(false);
+    });
+
+    it('includes partially overlapping ranges', () => {
+      const content = 'hello {++foo++} end';
+      // Select from position 8 (inside "foo") to end
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 8, content.length);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello foo end');
+    });
+
+    it('single range in non-collapsed selection works like cursor accept', () => {
+      const content = 'hello {++world++} end';
+      const { view, cleanup: c } = createCriticMarkupEditorWithSelection(content, 6, 17);
+      cleanup = c;
+
+      const result = acceptChangeAtCursor(view);
+
+      expect(result).toBe(true);
+      expect(view.state.doc.toString()).toBe('hello world end');
     });
   });
 
