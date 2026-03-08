@@ -14,7 +14,8 @@ import { indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatchi
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { completionKeymap } from '@codemirror/autocomplete';
-import { lintKeymap } from '@codemirror/lint';
+import { lintKeymap, forceLinting } from '@codemirror/lint';
+import { harperLinter } from './extensions/harper';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { Autolink, TaskList } from '@lezer/markdown';
 import { WikilinkExtension } from './extensions/wikilinkParser';
@@ -203,15 +204,32 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onSynced, onNavig
 
   // Track sync state for loading overlay
   useEffect(() => {
+    // Force linting once we have content (Y.js sync may arrive after synced event)
+    const scheduleLinting = () => {
+      const view = viewRef.current;
+      if (!view) return;
+      const tryLint = () => {
+        if (view.state.doc.length > 0) {
+          forceLinting(view);
+        } else {
+          // Content not yet applied — retry shortly
+          setTimeout(tryLint, 200);
+        }
+      };
+      setTimeout(tryLint, 100);
+    };
+
     if ((provider as any).synced) {
       setSynced(true);
       onSynced?.();
+      scheduleLinting();
       return;
     }
 
     const handleSynced = () => {
       setSynced(true);
       onSynced?.();
+      scheduleLinting();
     };
     provider.on('synced', handleSynced);
 
@@ -282,6 +300,7 @@ export function Editor({ readOnly, onEditorReady, onDocChange, onSynced, onNavig
         wikilinkAutocomplete(getMetadata, getCurrentFilePath),
         remoteCursorTheme,
         criticMarkupExtension(),
+        harperLinter,
         Prec.highest(keymap.of([{
           key: 'Mod-Shift-m',
           run: () => {

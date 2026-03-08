@@ -42,6 +42,7 @@
     "discord.js": "^14.25.1",
     "front-matter": "^4.0.2",
     "fuzzysort": "^3.1.0",
+    "harper.js": "^1.9.0",
     "hono": "^4.11.9",
     "http-proxy": "^1.18.1",
     "react": "^19.2.0",
