@@ -236,14 +236,29 @@ async fn search_worker(
         // 2. Drain remaining channel messages (non-blocking)
         while rx.try_recv().is_ok() {}
 
-        // 3. Collect all ready doc_ids
-        let ready: Vec<String> = pending
+        // ⚠️ LOCK ORDERING: DashMap shard locks < awareness RwLock
+        //
+        // We must NOT call is_folder_doc() inside pending.iter() — that would
+        // hold a DashMap shard read guard while acquiring an awareness read lock,
+        // creating a lock ordering cycle with WebSocket callbacks (which hold
+        // awareness WRITE and then write to search_pending synchronously).
+        // See docs/plans/2026-03-08-debounce-deadlock-fix.md for full analysis.
+
+        // 3a. Snapshot pending keys+values (only DashMap shard locks, no external locks)
+        let snapshot: Vec<(String, link_indexer::PendingEntry)> = pending
             .iter()
-            .filter(|e| {
-                let is_folder = link_indexer::is_folder_doc(e.key(), &docs).is_some();
-                is_folder || search_is_ready(e.value())
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        // Iterator dropped — all shard locks released.
+
+        // 3b. Filter to ready (safe to acquire awareness locks now)
+        let ready: Vec<String> = snapshot
+            .into_iter()
+            .filter(|(key, entry)| {
+                let is_folder = link_indexer::is_folder_doc(key, &docs).is_some();
+                is_folder || search_is_ready(entry)
             })
-            .map(|e| e.key().clone())
+            .map(|(key, _)| key)
             .collect();
 
         // 4. Process each ready doc
@@ -904,6 +919,12 @@ impl Server {
                                     indexer.on_document_update(&doc_key).await;
                                 });
                             }
+
+                            // ⚠️ This runs synchronously inside an awareness write lock.
+                            // Any lock acquired here must be LOWER than awareness in the
+                            // lock ordering. DashMap shard locks (via .entry()) are lower,
+                            // so this is safe — but code iterating this DashMap must NOT
+                            // hold shard locks while acquiring awareness locks.
 
                             // Notify search index worker (with deduplication)
                             if let Some(ref tx) = search_tx_for_callback {
@@ -2419,7 +2440,7 @@ async fn handle_move_document(
                 )
             })?;
 
-        let content_doc_ids: Vec<String> = needed_uuids
+        let mut content_doc_ids: Vec<String> = needed_uuids
             .iter()
             .map(|uuid| {
                 if relay_id.is_empty() {
@@ -2429,6 +2450,9 @@ async fn handle_move_document(
                 }
             })
             .collect();
+        // Sort to ensure consistent lock ordering across concurrent calls,
+        // preventing ABBA deadlocks when acquiring awareness write locks.
+        content_doc_ids.sort();
         let content_refs: Vec<_> = content_doc_ids
             .iter()
             .filter_map(|id| docs.get(id))

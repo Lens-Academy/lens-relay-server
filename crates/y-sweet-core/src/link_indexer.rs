@@ -395,18 +395,23 @@ pub fn apply_backlink_diff(folder_doc: &Doc, source_uuid: &str, new_targets: &Ha
 /// Find all loaded folder docs (docs with non-empty filemeta_v0).
 /// Returns doc_ids of all folder docs.
 pub fn find_all_folder_docs(docs: &DashMap<String, DocWithSyncKv>) -> Vec<String> {
-    let mut result: Vec<String> = docs
-        .iter()
-        .filter_map(|entry| {
-            let awareness = entry.value().awareness();
-            let guard = awareness.read().unwrap_or_else(|e| e.into_inner());
-            let txn = guard.doc.transact();
-            if let Some(filemeta) = txn.get_map("filemeta_v0") {
-                if filemeta.len(&txn) > 0 {
-                    return Some(entry.key().clone());
+    // Snapshot keys first — only DashMap shard locks, no external locks.
+    let keys: Vec<String> = docs.iter().map(|e| e.key().clone()).collect();
+    // Iterator dropped — all shard locks released.
+
+    // Now safe to acquire awareness locks without holding shard locks.
+    let mut result: Vec<String> = keys
+        .into_iter()
+        .filter(|key| {
+            if let Some(doc_ref) = docs.get(key) {
+                let awareness = doc_ref.awareness();
+                let guard = awareness.read().unwrap_or_else(|e| e.into_inner());
+                let txn = guard.doc.transact();
+                if let Some(filemeta) = txn.get_map("filemeta_v0") {
+                    return filemeta.len(&txn) > 0;
                 }
             }
-            None
+            false
         })
         .collect();
     result.sort();
@@ -1070,6 +1075,7 @@ pub(crate) struct RenameEvent {
     pub old_path: String,
 }
 
+#[derive(Clone, Copy)]
 pub struct PendingEntry {
     pub first_queued: Instant,
     pub last_updated: Instant,
@@ -1388,15 +1394,24 @@ impl LinkIndexer {
             // 2. Drain any remaining channel messages (non-blocking)
             while rx.try_recv().is_ok() {}
 
-            // 3. Collect all ready doc_ids
-            let ready: Vec<String> = self
+            // ⚠️ LOCK ORDERING: DashMap shard locks < awareness RwLock
+            // Same fix as search_worker — see server.rs comment for full explanation.
+
+            // 3a. Snapshot pending keys (only DashMap shard locks, no external locks)
+            let snapshot: Vec<String> = self
                 .pending
                 .iter()
-                .filter(|e| {
-                    let is_folder = is_folder_doc(e.key(), &docs).is_some();
-                    is_folder || self.is_ready(e.key())
-                })
                 .map(|e| e.key().clone())
+                .collect();
+            // Iterator dropped — all shard locks released.
+
+            // 3b. Filter to ready (safe to acquire awareness locks now)
+            let ready: Vec<String> = snapshot
+                .into_iter()
+                .filter(|key| {
+                    let is_folder = is_folder_doc(key, &docs).is_some();
+                    is_folder || self.is_ready(key)
+                })
                 .collect();
 
             // 4. Process each ready doc (sequentially, but NO sleeping between them)
