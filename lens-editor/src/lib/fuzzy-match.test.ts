@@ -75,6 +75,18 @@ describe('fuzzyMatch', () => {
     expect(result.score).toBeGreaterThan(0);
   });
 
+  it('matches spaces in query against spaces in target (filename with spaces)', () => {
+    const result = fuzzyMatch('Chat Panel', 'Lens/AI Chat Panel');
+    expect(result.match).toBe(true);
+    expect(result.score).toBeGreaterThan(0);
+  });
+
+  it('matches spaces in filenames across path segments', () => {
+    const result = fuzzyMatch('Getting Started', 'Lens Edu/Modules/Module_x/Getting Started');
+    expect(result.match).toBe(true);
+    expect(result.score).toBeGreaterThan(0);
+  });
+
   it('ranks substring match above scattered character match for "demo"', () => {
     const substringMatch = fuzzyMatch('demo', 'Detailed Demo Notes.md');
     const scatteredMatch = fuzzyMatch('demo', 'Docs/Early/Methods/Outline.md');

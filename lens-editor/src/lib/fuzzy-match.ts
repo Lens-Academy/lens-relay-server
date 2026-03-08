@@ -10,7 +10,8 @@ export interface FuzzyMatchResult {
 /**
  * Fuzzy-match a query against a target string.
  *
- * Spaces in the query are treated as `/` for path-aware matching.
+ * Spaces and slashes are treated as equivalent separators so that queries
+ * match across path boundaries and within names containing spaces.
  * Case-insensitive. Returns match status, a score for ranking, and character
  * ranges for highlight rendering.
  *
@@ -24,10 +25,11 @@ export function fuzzyMatch(query: string, target: string): FuzzyMatchResult {
     return { match: false, score: 0, ranges: [] };
   }
 
-  // Replace spaces with / for path-aware matching
-  const normalizedQuery = query.replace(/ /g, '/');
+  // Treat spaces and slashes as equivalent separators
+  const normalizedTarget = target.replace(/\//g, ' ');
 
-  const result = fuzzysort.single(normalizedQuery, target);
+  const result = fuzzysort.single(query, normalizedTarget);
+
   if (result === null) {
     return { match: false, score: 0, ranges: [] };
   }
