@@ -496,10 +496,15 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAll, onReject
     setExpandedFiles(new Set());
   };
 
-  const navigateToSuggestion = (docId: string, from: number) => {
+  const navigateToSuggestion = (docId: string, from: number, e?: React.MouseEvent) => {
     const uuid = docId.slice(-36);
     const shortUuid = uuid.slice(0, 8);
-    navigate(`/${shortUuid}?pos=${from}`);
+    const path = `/${shortUuid}?pos=${from}`;
+    if (e && (e.ctrlKey || e.metaKey)) {
+      window.open(`${window.location.origin}${path}`, '_blank');
+    } else {
+      navigate(path);
+    }
   };
 
   // Global accept/reject operate on filtered data
@@ -661,7 +666,7 @@ function FileSection({ file, folderName, expanded, onToggle, onAction, onNavigat
   expanded: boolean;
   onToggle: () => void;
   onAction?: (docId: string, suggestion: SuggestionItem, action: 'accept' | 'reject') => Promise<void>;
-  onNavigate: (docId: string, from: number) => void;
+  onNavigate: (docId: string, from: number, e?: React.MouseEvent) => void;
 }) {
   type ResolvedStatus = 'accepted' | 'rejected' | 'not-found';
   const [resolvedMap, setResolvedMap] = useState<Record<number, ResolvedStatus>>({});
@@ -744,7 +749,7 @@ function FileSection({ file, folderName, expanded, onToggle, onAction, onNavigat
                 resolved={resolvedMap[i] ?? null}
                 onAccept={onAction ? async () => { try { await onAction(file.doc_id, s, 'accept'); setResolved(i, 'accepted'); } catch { setResolved(i, 'not-found'); } } : undefined}
                 onReject={onAction ? async () => { try { await onAction(file.doc_id, s, 'reject'); setResolved(i, 'rejected'); } catch { setResolved(i, 'not-found'); } } : undefined}
-                onNavigate={() => onNavigate(file.doc_id, s.from)}
+                onNavigate={(e) => onNavigate(file.doc_id, s.from, e)}
               />
             ))}
           </div>
@@ -759,7 +764,7 @@ function SuggestionRow({ suggestion, resolved, onAccept, onReject, onNavigate }:
   resolved: 'accepted' | 'rejected' | 'not-found' | null;
   onAccept?: () => void;
   onReject?: () => void;
-  onNavigate: () => void;
+  onNavigate: (e: React.MouseEvent) => void;
 }) {
   return (
     <div className={`px-4 py-3 transition-colors duration-300 ${resolved ? 'bg-gray-50' : ''}`}>
