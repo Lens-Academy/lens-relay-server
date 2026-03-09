@@ -48,6 +48,7 @@ use y_sweet_core::{
         DebouncedSyncProtocolEventSender, DocumentUpdatedEvent, EventDispatcher, EventEnvelope,
         EventSender, SyncProtocolEventSender, UnifiedEventDispatcher, WebhookSender,
     },
+    critic_scanner,
     link_indexer::{self, LinkIndexer},
     metrics::RelayMetrics,
     search_index::SearchIndex,
@@ -174,6 +175,11 @@ struct SearchQuery {
 
 fn default_search_limit() -> usize {
     20
+}
+
+#[derive(Deserialize)]
+struct SuggestionsQuery {
+    folder_id: String,
 }
 
 #[derive(Deserialize)]
@@ -1533,7 +1539,8 @@ impl Server {
             .route("/webhook/reload", post(reload_webhook_config_endpoint))
             .route("/search", get(handle_search))
             .route("/doc/move", post(handle_move_document))
-            .route("/open/*path", get(handle_open_by_path));
+            .route("/open/*path", get(handle_open_by_path))
+            .route("/suggestions", get(handle_suggestions));
 
         // Only register /mcp if MCP_API_KEY is set
         if let Some(ref key) = self.mcp_api_key {
@@ -2221,6 +2228,96 @@ async fn handle_search(
         "total_hits": total_hits,
         "query": params.q
     })))
+}
+
+/// Scan all documents in a folder for CriticMarkup suggestions.
+///
+/// GET /suggestions?folder_id=...
+/// Response: { "files": [{ "path": "...", "doc_id": "...", "suggestions": [...] }] }
+async fn handle_suggestions(
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+    State(server_state): State<Arc<Server>>,
+    Query(params): Query<SuggestionsQuery>,
+) -> Result<Json<Value>, AppError> {
+    server_state.check_auth(auth_header)?;
+
+    let folder_id = &params.folder_id;
+
+    // Load the folder doc and get content UUIDs from filemeta_v0
+    server_state
+        .ensure_doc_loaded(folder_id)
+        .await
+        .map_err(|e| AppError(StatusCode::NOT_FOUND, anyhow!("Folder not found: {}", e)))?;
+
+    let content_uuids = link_indexer::is_folder_doc(folder_id, &server_state.docs)
+        .ok_or_else(|| AppError(StatusCode::NOT_FOUND, anyhow!("Not a folder document")))?;
+
+    // Get path mapping from filemeta_v0
+    let path_map = {
+        let doc_ref = server_state
+            .docs
+            .get(folder_id)
+            .ok_or_else(|| AppError(StatusCode::NOT_FOUND, anyhow!("Folder doc not loaded")))?;
+        let awareness = doc_ref.awareness();
+        let guard = awareness.read().unwrap_or_else(|e| e.into_inner());
+        let txn = guard.doc.transact();
+        let filemeta = txn
+            .get_map("filemeta_v0")
+            .ok_or_else(|| AppError(StatusCode::NOT_FOUND, anyhow!("No filemeta_v0")))?;
+        let mut map = std::collections::HashMap::new();
+        for (path, value) in filemeta.iter(&txn) {
+            if let Some(id) = link_indexer::extract_id_from_filemeta_entry(&value, &txn) {
+                map.insert(id, path.to_string());
+            }
+        }
+        map
+    };
+
+    // relay_id = first 36 chars of compound folder_id
+    if folder_id.len() < 36 {
+        return Err(AppError(StatusCode::BAD_REQUEST, anyhow!("Invalid folder_id")));
+    }
+    let relay_id = &folder_id[..36];
+
+    let mut files = Vec::new();
+
+    for content_uuid in &content_uuids {
+        let doc_id = format!("{}-{}", relay_id, content_uuid);
+        let path = path_map
+            .get(content_uuid)
+            .cloned()
+            .unwrap_or_else(|| content_uuid.clone());
+
+        // Load doc content
+        if server_state.ensure_doc_loaded(&doc_id).await.is_err() {
+            continue;
+        }
+        let content = {
+            let Some(doc_ref) = server_state.docs.get(&doc_id) else {
+                continue;
+            };
+            let awareness = doc_ref.awareness();
+            let guard = awareness.read().unwrap_or_else(|e| e.into_inner());
+            let txn = guard.doc.transact();
+            match txn.get_text("contents") {
+                Some(text) => text.get_string(&txn),
+                None => continue,
+            }
+        };
+
+        let suggestions = critic_scanner::scan_suggestions(&content);
+        if suggestions.is_empty() {
+            continue;
+        }
+
+        files.push(serde_json::json!({
+            "path": path,
+            "doc_id": doc_id,
+            "suggestions": suggestions,
+        }));
+    }
+
+    Ok(Json(serde_json::json!({ "files": files })))
 }
 
 /// Move a document to a new path within or across folders.
