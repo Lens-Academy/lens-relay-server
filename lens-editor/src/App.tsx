@@ -19,7 +19,7 @@ import { urlForDoc } from './lib/url-utils';
 import { ReviewPage } from './components/ReviewPage/ReviewPage';
 import { useDocConnection } from './hooks/useDocConnection';
 import { applySuggestionAction } from './lib/suggestion-actions';
-import type { SuggestionItem, FileSuggestions } from './hooks/useSuggestions';
+import type { SuggestionItem } from './hooks/useSuggestions';
 import { useResolvedDocId } from './hooks/useResolvedDocId';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { useRecentFiles } from './hooks/useRecentFiles';
@@ -202,30 +202,12 @@ function ReviewPageWithActions({ folderIds, folders, relayId }: { folderIds: str
     applySuggestionAction(doc, suggestion, action);
   };
 
-  const handleAcceptAllFile = async (file: FileSuggestions) => {
-    const doc = await getOrConnect(file.doc_id);
-    const sorted = [...file.suggestions].sort((a, b) => b.from - a.from);
-    for (const s of sorted) {
-      applySuggestionAction(doc, s, 'accept');
-    }
-  };
-
-  const handleRejectAllFile = async (file: FileSuggestions) => {
-    const doc = await getOrConnect(file.doc_id);
-    const sorted = [...file.suggestions].sort((a, b) => b.from - a.from);
-    for (const s of sorted) {
-      applySuggestionAction(doc, s, 'reject');
-    }
-  };
-
   return (
     <ReviewPage
       folderIds={folderIds}
       folders={folders}
       relayId={relayId}
       onAction={handleAction}
-      onAcceptAllFile={handleAcceptAllFile}
-      onRejectAllFile={handleRejectAllFile}
     />
   );
 }

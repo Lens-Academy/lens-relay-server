@@ -1,4 +1,4 @@
-import { useState, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSuggestions, type FileSuggestions, type SuggestionItem } from '../../hooks/useSuggestions';
 
@@ -53,26 +53,64 @@ interface ReviewPageProps {
   folders?: FolderInfo[];
   relayId?: string;
   onAction?: (docId: string, suggestion: SuggestionItem, action: 'accept' | 'reject') => Promise<void>;
-  onAcceptAllFile?: (file: FileSuggestions) => Promise<void>;
-  onRejectAllFile?: (file: FileSuggestions) => Promise<void>;
   onAcceptAll?: () => Promise<void>;
   onRejectAll?: () => Promise<void>;
 }
 
-const TIME_PRESETS = [
-  { value: 'all', label: 'All' },
-  { value: 'hour', label: '1h' },
-  { value: '24h', label: '24h' },
-  { value: 'week', label: '7d' },
-  { value: 'custom', label: 'Custom' },
-] as const;
+// --- Time slider utilities ---
+// Cubic power curve: slider position 0..1000 maps to 0ms..30 days ago.
+// Cubic gives fine control for recent times, coarser for distant past.
+const SLIDER_MAX = 1000;
+const MAX_AGO_MS = 30 * 86400_000; // 30 days
+const SLIDER_POWER = 3;
 
-const TIME_THRESHOLDS: Record<string, number> = {
-  hour: 3600_000,
-  '24h': 86400_000,
-  week: 604800_000,
-  all: 0,
-};
+function sliderToMs(pos: number): number {
+  if (pos <= 0) return 0;
+  if (pos >= SLIDER_MAX) return Infinity; // leftmost position = all time
+  return Math.round(MAX_AGO_MS * Math.pow(pos / SLIDER_MAX, SLIDER_POWER));
+}
+
+function msToSlider(ms: number): number {
+  if (ms <= 0) return 0;
+  if (!isFinite(ms)) return SLIDER_MAX; // all time = leftmost
+  return Math.round((SLIDER_MAX - 1) * Math.pow(Math.min(ms, MAX_AGO_MS) / MAX_AGO_MS, 1 / SLIDER_POWER));
+}
+
+function formatAgo(ms: number): string {
+  if (!isFinite(ms)) return 'all time';
+  if (ms <= 0) return 'now';
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return 'now';
+  if (minutes === 1) return '1 min ago';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(ms / 3600_000);
+  if (hours === 1) return '1 hour ago';
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(ms / 86400_000);
+  if (days === 1) return '1 day ago';
+  return `${days}d ago`;
+}
+
+function isFullRange(fromAgo: number, toAgo: number): boolean {
+  return !isFinite(fromAgo) && toAgo <= 0;
+}
+
+interface TimeRange {
+  mode: 'all' | 'range' | 'custom';
+  // For 'range' mode: ms ago from now (0 = now)
+  fromAgo: number;  // the older end (larger number)
+  toAgo: number;    // the newer end (smaller number)
+  // For 'custom' mode: ISO datetime-local strings
+  customFrom: string;
+  customTo: string;
+}
+
+const TIME_QUICK_PRESETS = [
+  { label: 'All', fromAgo: Infinity, toAgo: 0, mode: 'all' as const },
+  { label: '1h', fromAgo: 3600_000, toAgo: 0, mode: 'range' as const },
+  { label: '24h', fromAgo: 86400_000, toAgo: 0, mode: 'range' as const },
+  { label: '7d', fromAgo: 604800_000, toAgo: 0, mode: 'range' as const },
+];
 
 interface LocationEntry {
   key: string;        // folderId or folderId:/prefix
@@ -81,28 +119,105 @@ interface LocationEntry {
   folderId: string;
 }
 
-function FilterBar({ authors, locations, authorFilter, timeFilter, customFrom, customTo, locationFilter, onAuthorToggle, onTimeFilter, onCustomFrom, onCustomTo, onLocationToggle, onClear }: {
+function DualRangeSlider({ fromAgo, toAgo, onChange }: {
+  fromAgo: number;
+  toAgo: number;
+  onChange: (fromAgo: number, toAgo: number) => void;
+}) {
+  // Invert: slider 0 = max ago (left = past), slider MAX = 0ms ago (right = now)
+  const fromPos = SLIDER_MAX - msToSlider(fromAgo);
+  const toPos = SLIDER_MAX - msToSlider(toAgo);
+
+  const leftPct = (Math.min(fromPos, toPos) / SLIDER_MAX) * 100;
+  const rightPct = 100 - (Math.max(fromPos, toPos) / SLIDER_MAX) * 100;
+
+  const full = isFullRange(fromAgo, toAgo);
+  const thumbBase = `absolute inset-x-0 w-full appearance-none bg-transparent pointer-events-none
+    [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none
+    [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full
+    [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white
+    [&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:cursor-pointer
+    [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none
+    [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full
+    [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-white
+    [&::-moz-range-thumb]:shadow [&::-moz-range-thumb]:cursor-pointer`;
+  const thumbClass = full
+    ? `${thumbBase} [&::-webkit-slider-thumb]:bg-gray-400 [&::-moz-range-thumb]:bg-gray-400`
+    : `${thumbBase} [&::-webkit-slider-thumb]:bg-blue-500 [&::-moz-range-thumb]:bg-blue-500`;
+
+  return (
+    <div className="flex items-center gap-3 flex-1 min-w-0">
+      <span className="text-gray-500 whitespace-nowrap shrink-0 w-16 text-right">{formatAgo(fromAgo)}</span>
+      <div className="relative flex-1 h-6 flex items-center">
+        <div className="absolute inset-x-0 h-1 bg-gray-200 rounded-full" />
+        <div
+          className={`absolute h-1 rounded-full ${full ? 'bg-gray-300' : 'bg-blue-400'}`}
+          style={{ left: `${leftPct}%`, right: `${rightPct}%` }}
+        />
+        {/* From slider (older end = left side) */}
+        <input
+          type="range"
+          min={0}
+          max={SLIDER_MAX}
+          value={fromPos}
+          onChange={e => {
+            const pos = Number(e.target.value);
+            const newFrom = sliderToMs(SLIDER_MAX - pos);
+            onChange(Math.max(newFrom, toAgo), toAgo);
+          }}
+          className={thumbClass}
+          style={{ zIndex: fromPos >= toPos ? 1 : 2 }}
+        />
+        {/* To slider (newer end = right side) */}
+        <input
+          type="range"
+          min={0}
+          max={SLIDER_MAX}
+          value={toPos}
+          onChange={e => {
+            const pos = Number(e.target.value);
+            const newTo = sliderToMs(SLIDER_MAX - pos);
+            onChange(fromAgo, Math.min(newTo, fromAgo));
+          }}
+          className={thumbClass}
+          style={{ zIndex: toPos >= fromPos ? 1 : 2 }}
+        />
+      </div>
+      <span className="text-gray-500 whitespace-nowrap shrink-0 w-16">{formatAgo(toAgo)}</span>
+    </div>
+  );
+}
+
+function FilterBar({ authors, locations, authorFilter, timeRange, locationFilter, onAuthorToggle, onAuthorClear, onTimeRange, onLocationToggle, onLocationClear, onClear }: {
   authors: string[];
   locations: LocationEntry[];
   authorFilter: Set<string>;
-  timeFilter: string;
-  customFrom: string;
-  customTo: string;
+  timeRange: TimeRange;
   locationFilter: Set<string>;
   onAuthorToggle: (author: string) => void;
-  onTimeFilter: (value: string) => void;
-  onCustomFrom: (value: string) => void;
-  onCustomTo: (value: string) => void;
+  onAuthorClear: () => void;
+  onTimeRange: (range: TimeRange) => void;
   onLocationToggle: (key: string) => void;
+  onLocationClear: () => void;
   onClear: () => void;
 }) {
-  const isActive = authorFilter.size > 0 || timeFilter !== 'all' || locationFilter.size > 0;
+  const isActive = authorFilter.size > 0 || timeRange.mode !== 'all' || locationFilter.size > 0;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 mb-4 text-xs">
+    <div className="flex flex-col gap-2 mb-4 text-xs">
       {locations.length >= 2 && (
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-gray-400 uppercase tracking-wide mr-0.5">Location</span>
+          <span className="text-gray-500 font-semibold uppercase tracking-wider mr-0.5">Location</span>
+          <button
+            onClick={onLocationClear}
+            className={`px-2 py-0.5 rounded-full transition-colors ${
+              locationFilter.size === 0
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+            }`}
+          >
+            All
+          </button>
           {locations.map(loc => (
             <button
               key={loc.key}
@@ -120,7 +235,17 @@ function FilterBar({ authors, locations, authorFilter, timeFilter, customFrom, c
       )}
       {authors.length > 0 && (
         <div className="flex items-center gap-1.5">
-          <span className="text-gray-400 uppercase tracking-wide mr-0.5">Author</span>
+          <span className="text-gray-500 font-semibold uppercase tracking-wider mr-0.5">Author</span>
+          <button
+            onClick={onAuthorClear}
+            className={`px-2 py-0.5 rounded-full transition-colors ${
+              authorFilter.size === 0
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+            }`}
+          >
+            All
+          </button>
           {authors.map(a => (
             <button
               key={a}
@@ -136,61 +261,86 @@ function FilterBar({ authors, locations, authorFilter, timeFilter, customFrom, c
           ))}
         </div>
       )}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-gray-400 uppercase tracking-wide mr-0.5">Time</span>
-        {TIME_PRESETS.map(p => (
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-gray-500 font-semibold uppercase tracking-wider mr-0.5">Time</span>
+          {TIME_QUICK_PRESETS.map(p => (
+            <button
+              key={p.label}
+              onClick={() => onTimeRange({
+                mode: p.mode,
+                fromAgo: p.fromAgo,
+                toAgo: p.toAgo,
+                customFrom: '',
+                customTo: '',
+              })}
+              className={`px-2 py-0.5 rounded-full transition-colors ${
+                timeRange.mode === p.mode && (p.mode === 'all' || (timeRange.fromAgo === p.fromAgo && timeRange.toAgo === p.toAgo))
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
           <button
-            key={p.value}
-            onClick={() => onTimeFilter(p.value)}
+            onClick={() => onTimeRange({ ...timeRange, mode: 'custom' })}
             className={`px-2 py-0.5 rounded-full transition-colors ${
-              timeFilter === p.value
+              timeRange.mode === 'custom'
                 ? 'bg-blue-100 text-blue-700'
                 : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
             }`}
           >
-            {p.label}
+            Exact
           </button>
-        ))}
-        {timeFilter === 'custom' && (
+          {isActive && (
+            <button onClick={onClear} className="text-blue-600 hover:text-blue-800 ml-2">
+              Clear All Filters
+            </button>
+          )}
+        </div>
+        {timeRange.mode !== 'custom' && (
+          <div className="flex items-center gap-2">
+            <DualRangeSlider
+              fromAgo={timeRange.fromAgo}
+              toAgo={timeRange.toAgo}
+              onChange={(fromAgo, toAgo) => onTimeRange({ ...timeRange, mode: isFullRange(fromAgo, toAgo) ? 'all' : 'range', fromAgo, toAgo })}
+            />
+          </div>
+        )}
+        {timeRange.mode === 'custom' && (
           <div className="flex items-center gap-1">
             <input
               type="datetime-local"
-              value={customFrom}
-              onChange={e => onCustomFrom(e.target.value)}
+              value={timeRange.customFrom}
+              onChange={e => onTimeRange({ ...timeRange, customFrom: e.target.value })}
               className="px-1.5 py-0.5 border border-gray-300 rounded text-xs bg-white text-gray-700"
-              placeholder="From"
             />
             <span className="text-gray-400">&mdash;</span>
             <input
               type="datetime-local"
-              value={customTo}
-              onChange={e => onCustomTo(e.target.value)}
+              value={timeRange.customTo}
+              onChange={e => onTimeRange({ ...timeRange, customTo: e.target.value })}
               className="px-1.5 py-0.5 border border-gray-300 rounded text-xs bg-white text-gray-700"
-              placeholder="To"
             />
           </div>
         )}
       </div>
-      {isActive && (
-        <button onClick={onClear} className="text-blue-600 hover:text-blue-800 ml-1">
-          Clear filters
-        </button>
-      )}
     </div>
   );
 }
 
-export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRejectAllFile, onAcceptAll, onRejectAll }: ReviewPageProps) {
+export function ReviewPage({ folderIds, folders, onAction, onAcceptAll, onRejectAll }: ReviewPageProps) {
   const { data, loading, error, refresh } = useSuggestions(folderIds);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+  const autoExpandedRef = useRef(false);
   const navigate = useNavigate();
 
   // Filter state
   const [authorFilter, setAuthorFilter] = useState<Set<string>>(new Set());
-  const [timeFilter, setTimeFilter] = useState('all');
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
+  const [timeRange, setTimeRange] = useState<TimeRange>({ mode: 'all', fromAgo: Infinity, toAgo: 0, customFrom: '', customTo: '' });
   const [locationFilter, setLocationFilter] = useState<Set<string>>(new Set());
+  const [confirmAction, setConfirmAction] = useState<'accept' | 'reject' | null>(null);
 
   const toggleSet = (prev: Set<string>, value: string) => {
     const next = new Set(prev);
@@ -263,17 +413,18 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
   // Filtering pipeline
   const filteredData = useMemo(() => {
     const now = Date.now();
-    const hasTimeFilter = timeFilter !== 'all';
+    const hasTimeFilter = timeRange.mode !== 'all';
 
-    let getTimeRange: () => [number, number];
-    if (timeFilter === 'custom') {
-      getTimeRange = () => [
-        customFrom ? new Date(customFrom).getTime() : 0,
-        customTo ? new Date(customTo).getTime() : Infinity,
+    let getTimeBounds: () => [number, number];
+    if (timeRange.mode === 'custom') {
+      getTimeBounds = () => [
+        timeRange.customFrom ? new Date(timeRange.customFrom).getTime() : 0,
+        timeRange.customTo ? new Date(timeRange.customTo).getTime() : Infinity,
       ];
+    } else if (timeRange.mode === 'range') {
+      getTimeBounds = () => [now - timeRange.fromAgo, now - timeRange.toAgo];
     } else {
-      const threshold = now - (TIME_THRESHOLDS[timeFilter] ?? 0);
-      getTimeRange = () => [threshold, Infinity];
+      getTimeBounds = () => [0, Infinity];
     }
 
     return data
@@ -299,7 +450,7 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
       })
       .map(file => {
         if (authorFilter.size === 0 && !hasTimeFilter) return file;
-        const [fromTime, toTime] = getTimeRange();
+        const [fromTime, toTime] = getTimeBounds();
         const filtered = file.suggestions.filter(s => {
           if (authorFilter.size > 0 && (!s.author || !authorFilter.has(s.author))) return false;
           if (hasTimeFilter && (!s.timestamp || s.timestamp < fromTime || s.timestamp > toTime)) return false;
@@ -308,17 +459,23 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
         return { ...file, suggestions: filtered };
       })
       .filter(file => file.suggestions.length > 0);
-  }, [data, authorFilter, timeFilter, customFrom, customTo, locationFilter]);
+  }, [data, authorFilter, timeRange, locationFilter]);
 
-  const isFiltered = authorFilter.size > 0 || timeFilter !== 'all' || locationFilter.size > 0;
+  // Auto-expand the first file on initial load
+  useEffect(() => {
+    if (!autoExpandedRef.current && filteredData.length > 0) {
+      autoExpandedRef.current = true;
+      setExpandedFiles(new Set([filteredData[0].doc_id]));
+    }
+  }, [filteredData]);
+
+  const isFiltered = authorFilter.size > 0 || timeRange.mode !== 'all' || locationFilter.size > 0;
   const totalFiltered = filteredData.reduce((sum, f) => sum + f.suggestions.length, 0);
   const totalAll = data.reduce((sum, f) => sum + f.suggestions.length, 0);
 
   const clearFilters = () => {
     setAuthorFilter(new Set());
-    setTimeFilter('all');
-    setCustomFrom('');
-    setCustomTo('');
+    setTimeRange({ mode: 'all', fromAgo: Infinity, toAgo: 0, customFrom: '', customTo: '' });
     setLocationFilter(new Set());
   };
 
@@ -346,16 +503,22 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
   };
 
   // Global accept/reject operate on filtered data
-  const handleAcceptAllFiltered = onAcceptAllFile ? async () => {
+  const handleAcceptAllFiltered = onAction ? async () => {
     for (const file of filteredData) {
-      await onAcceptAllFile(file);
+      for (const s of [...file.suggestions].sort((a, b) => b.from - a.from)) {
+        try { await onAction(file.doc_id, s, 'accept'); } catch { /* skip not-found */ }
+      }
     }
+    refresh();
   } : onAcceptAll;
 
-  const handleRejectAllFiltered = onRejectAllFile ? async () => {
+  const handleRejectAllFiltered = onAction ? async () => {
     for (const file of filteredData) {
-      await onRejectAllFile(file);
+      for (const s of [...file.suggestions].sort((a, b) => b.from - a.from)) {
+        try { await onAction(file.doc_id, s, 'reject'); } catch { /* skip not-found */ }
+      }
     }
+    refresh();
   } : onRejectAll;
 
   if (loading) {
@@ -388,23 +551,17 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
               }
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             {handleAcceptAllFiltered && (
-              <button onClick={handleAcceptAllFiltered} className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
-                Accept All
+              <button onClick={() => setConfirmAction('accept')} className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
+                {isFiltered ? 'Accept Filtered' : 'Accept All'}
               </button>
             )}
             {handleRejectAllFiltered && (
-              <button onClick={handleRejectAllFiltered} className="px-3 py-1.5 text-sm bg-red-600 text-white rounded hover:bg-red-700">
-                Reject All
+              <button onClick={() => setConfirmAction('reject')} className="px-3 py-1.5 text-sm bg-red-600 text-white rounded hover:bg-red-700">
+                {isFiltered ? 'Reject Filtered' : 'Reject All'}
               </button>
             )}
-            <button onClick={expandAll} className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">
-              Expand All
-            </button>
-            <button onClick={collapseAll} className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">
-              Collapse All
-            </button>
             <button onClick={refresh} className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50">
               Refresh
             </button>
@@ -415,38 +572,82 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
           authors={uniqueAuthors}
           locations={locations}
           authorFilter={authorFilter}
-          timeFilter={timeFilter}
-          customFrom={customFrom}
-          customTo={customTo}
+          timeRange={timeRange}
           locationFilter={locationFilter}
           onAuthorToggle={a => setAuthorFilter(prev => toggleSet(prev, a))}
-          onTimeFilter={setTimeFilter}
-          onCustomFrom={setCustomFrom}
-          onCustomTo={setCustomTo}
+          onAuthorClear={() => setAuthorFilter(new Set())}
+          onTimeRange={setTimeRange}
           onLocationToggle={key => setLocationFilter(prev => toggleSet(prev, key))}
+          onLocationClear={() => setLocationFilter(new Set())}
           onClear={clearFilters}
         />
 
         {filteredData.length === 0 ? (
           <div className="p-8 text-center text-gray-500">
             <p className="text-sm">No suggestions match the current filters.</p>
-            <button onClick={clearFilters} className="text-sm text-blue-600 hover:text-blue-800 mt-2">Clear filters</button>
+            <button onClick={clearFilters} className="text-sm text-blue-600 hover:text-blue-800 mt-2">Clear All Filters</button>
           </div>
         ) : (
-          <div className="space-y-2">
-            {filteredData.map(file => (
-              <FileSection
-                key={file.doc_id}
-                file={file}
-                folderName={folderNameMap.get(file.folder_id)}
-                expanded={expandedFiles.has(file.doc_id)}
-                onToggle={() => toggleFile(file.doc_id)}
-                onAction={onAction}
-                onAcceptAllFile={onAcceptAllFile}
-                onRejectAllFile={onRejectAllFile}
-                onNavigate={navigateToSuggestion}
-              />
-            ))}
+          <>
+            <div className="flex items-center gap-2 mb-3">
+              <button onClick={expandAll} className="px-2.5 py-1 text-xs text-gray-500 border border-gray-200 rounded hover:bg-gray-50">
+                Expand All
+              </button>
+              <button onClick={collapseAll} className="px-2.5 py-1 text-xs text-gray-500 border border-gray-200 rounded hover:bg-gray-50">
+                Collapse All
+              </button>
+            </div>
+            <div className="space-y-2">
+              {filteredData.map(file => (
+                <FileSection
+                  key={file.doc_id}
+                  file={file}
+                  folderName={folderNameMap.get(file.folder_id)}
+                  expanded={expandedFiles.has(file.doc_id)}
+                  onToggle={() => toggleFile(file.doc_id)}
+                  onAction={onAction}
+                  onNavigate={navigateToSuggestion}
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {confirmAction && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setConfirmAction(null)}>
+            <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm mx-4" onClick={e => e.stopPropagation()}>
+              <h2 className="text-lg font-semibold text-gray-900 mb-2">
+                {confirmAction === 'accept' ? 'Accept' : 'Reject'} {isFiltered ? 'filtered' : 'all'} suggestions?
+              </h2>
+              <p className="text-sm text-gray-500 mb-4">
+                This will {confirmAction === 'accept' ? 'accept' : 'reject'}{' '}
+                <strong>{totalFiltered} suggestion{totalFiltered !== 1 ? 's' : ''}</strong> across{' '}
+                <strong>{filteredData.length} file{filteredData.length !== 1 ? 's' : ''}</strong>.
+                This action cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setConfirmAction(null)}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    const handler = confirmAction === 'accept' ? handleAcceptAllFiltered : handleRejectAllFiltered;
+                    setConfirmAction(null);
+                    if (handler) await handler();
+                  }}
+                  className={`px-3 py-1.5 text-sm text-white rounded ${
+                    confirmAction === 'accept'
+                      ? 'bg-green-600 hover:bg-green-700'
+                      : 'bg-red-600 hover:bg-red-700'
+                  }`}
+                >
+                  {confirmAction === 'accept' ? 'Accept' : 'Reject'} {totalFiltered} suggestion{totalFiltered !== 1 ? 's' : ''}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -454,41 +655,52 @@ export function ReviewPage({ folderIds, folders, onAction, onAcceptAllFile, onRe
   );
 }
 
-function FileSection({ file, folderName, expanded, onToggle, onAction, onAcceptAllFile, onRejectAllFile, onNavigate }: {
+function FileSection({ file, folderName, expanded, onToggle, onAction, onNavigate }: {
   file: FileSuggestions;
   folderName?: string;
   expanded: boolean;
   onToggle: () => void;
   onAction?: (docId: string, suggestion: SuggestionItem, action: 'accept' | 'reject') => Promise<void>;
-  onAcceptAllFile?: (file: FileSuggestions) => Promise<void>;
-  onRejectAllFile?: (file: FileSuggestions) => Promise<void>;
   onNavigate: (docId: string, from: number) => void;
 }) {
-  const [resolvedMap, setResolvedMap] = useState<Record<number, 'accepted' | 'rejected'>>({});
+  type ResolvedStatus = 'accepted' | 'rejected' | 'not-found';
+  const [resolvedMap, setResolvedMap] = useState<Record<number, ResolvedStatus>>({});
 
-  const setResolved = (index: number, status: 'accepted' | 'rejected') => {
+  const setResolved = (index: number, status: ResolvedStatus) => {
     setResolvedMap(prev => ({ ...prev, [index]: status }));
   };
 
   const handleAcceptAll = async () => {
-    if (onAcceptAllFile) await onAcceptAllFile(file);
-    const all: Record<number, 'accepted' | 'rejected'> = {};
-    file.suggestions.forEach((_, i) => { all[i] = 'accepted'; });
-    setResolvedMap(prev => ({ ...prev, ...all }));
+    if (!onAction) return;
+    for (let i = 0; i < file.suggestions.length; i++) {
+      if (resolvedMap[i]) continue;
+      try {
+        await onAction(file.doc_id, file.suggestions[i], 'accept');
+        setResolved(i, 'accepted');
+      } catch {
+        setResolved(i, 'not-found');
+      }
+    }
   };
 
   const handleRejectAll = async () => {
-    if (onRejectAllFile) await onRejectAllFile(file);
-    const all: Record<number, 'accepted' | 'rejected'> = {};
-    file.suggestions.forEach((_, i) => { all[i] = 'rejected'; });
-    setResolvedMap(prev => ({ ...prev, ...all }));
+    if (!onAction) return;
+    for (let i = 0; i < file.suggestions.length; i++) {
+      if (resolvedMap[i]) continue;
+      try {
+        await onAction(file.doc_id, file.suggestions[i], 'reject');
+        setResolved(i, 'rejected');
+      } catch {
+        setResolved(i, 'not-found');
+      }
+    }
   };
 
   return (
-    <div className="border-2 border-gray-400 rounded-lg overflow-hidden">
+    <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
       <div className="flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors">
         <button onClick={onToggle} className="flex items-center gap-3 flex-1">
-          <span className="text-xs text-gray-400">{expanded ? '\u25BC' : '\u25B6'}</span>
+          <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
           <span className="font-medium">
             {(() => {
               const fullPath = folderName ? `${folderName}${file.path}` : file.path;
@@ -509,12 +721,12 @@ function FileSection({ file, folderName, expanded, onToggle, onAction, onAcceptA
         </button>
         {expanded && (
           <div className="flex gap-1 ml-2">
-            {onAcceptAllFile && (
+            {onAction && (
               <button onClick={handleAcceptAll} title="Accept all in file" className="px-2 py-1 text-xs text-green-700 hover:bg-green-50 rounded">
                 Accept All
               </button>
             )}
-            {onRejectAllFile && (
+            {onAction && (
               <button onClick={handleRejectAll} title="Reject all in file" className="px-2 py-1 text-xs text-red-700 hover:bg-red-50 rounded">
                 Reject All
               </button>
@@ -522,27 +734,29 @@ function FileSection({ file, folderName, expanded, onToggle, onAction, onAcceptA
           </div>
         )}
       </div>
-      {expanded && (
-        <div className="divide-y divide-gray-300">
-          {file.suggestions.map((s, i) => (
-            <SuggestionRow
-              key={i}
-              suggestion={s}
-              resolved={resolvedMap[i] ?? null}
-              onAccept={onAction ? async () => { await onAction(file.doc_id, s, 'accept'); setResolved(i, 'accepted'); } : undefined}
-              onReject={onAction ? async () => { await onAction(file.doc_id, s, 'reject'); setResolved(i, 'rejected'); } : undefined}
-              onNavigate={() => onNavigate(file.doc_id, s.from)}
-            />
-          ))}
+      <div className={`grid transition-[grid-template-rows] duration-200 ease-in-out ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+        <div className="overflow-hidden">
+          <div className="divide-y divide-gray-200">
+            {file.suggestions.map((s, i) => (
+              <SuggestionRow
+                key={i}
+                suggestion={s}
+                resolved={resolvedMap[i] ?? null}
+                onAccept={onAction ? async () => { try { await onAction(file.doc_id, s, 'accept'); setResolved(i, 'accepted'); } catch { setResolved(i, 'not-found'); } } : undefined}
+                onReject={onAction ? async () => { try { await onAction(file.doc_id, s, 'reject'); setResolved(i, 'rejected'); } catch { setResolved(i, 'not-found'); } } : undefined}
+                onNavigate={() => onNavigate(file.doc_id, s.from)}
+              />
+            ))}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
 function SuggestionRow({ suggestion, resolved, onAccept, onReject, onNavigate }: {
   suggestion: SuggestionItem;
-  resolved: 'accepted' | 'rejected' | null;
+  resolved: 'accepted' | 'rejected' | 'not-found' | null;
   onAccept?: () => void;
   onReject?: () => void;
   onNavigate: () => void;
@@ -551,7 +765,11 @@ function SuggestionRow({ suggestion, resolved, onAccept, onReject, onNavigate }:
     <div className={`px-4 py-3 transition-colors duration-300 ${resolved ? 'bg-gray-50' : ''}`}>
       <div className="flex items-center gap-2 mb-2">
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          {resolved ? (
+          {resolved === 'not-found' ? (
+            <span className="text-xs font-medium px-2 py-0.5 rounded text-amber-700 bg-amber-100">
+              No longer found (resolved or changed)
+            </span>
+          ) : resolved ? (
             <span className={`text-xs font-medium px-2 py-0.5 rounded ${
               resolved === 'accepted' ? 'text-green-700 bg-green-100' : 'text-red-700 bg-red-100'
             }`}>
