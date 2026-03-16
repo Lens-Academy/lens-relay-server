@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as Y from 'yjs';
-import { createDocument, renameDocument, deleteDocument } from './relay-api';
+import { createDocument, renameDocument, deleteDocument, createFolder } from './relay-api';
 import type { FileMetadata } from '../hooks/useFolderMetadata';
 
 // Mock fetch for server calls
@@ -172,6 +172,44 @@ describe('relay-api', () => {
       deleteDocument(doc, '/NonExistent.md');
 
       expect(filemeta.size).toBe(sizeBefore);
+    });
+  });
+
+  describe('createFolder', () => {
+    it('creates folder entry in filemeta_v0 with type folder', () => {
+      createFolder(doc, '/NewFolder');
+
+      const entry = filemeta.get('/NewFolder');
+      expect(entry).toBeDefined();
+      expect(entry!.type).toBe('folder');
+      expect(entry!.id).toBeDefined();
+      expect(entry!.version).toBe(0);
+    });
+
+    it('creates entry in legacy docs map', () => {
+      createFolder(doc, '/NewFolder');
+
+      const entry = legacyDocs.get('/NewFolder');
+      expect(entry).toBeDefined();
+    });
+
+    it('creates ancestor folders for nested paths', () => {
+      createFolder(doc, '/A/B/C');
+
+      expect(filemeta.get('/A')).toBeDefined();
+      expect(filemeta.get('/A')!.type).toBe('folder');
+      expect(filemeta.get('/A/B')).toBeDefined();
+      expect(filemeta.get('/A/B')!.type).toBe('folder');
+      expect(filemeta.get('/A/B/C')).toBeDefined();
+      expect(filemeta.get('/A/B/C')!.type).toBe('folder');
+    });
+
+    it('does not overwrite existing folder', () => {
+      createFolder(doc, '/Existing');
+      const firstId = filemeta.get('/Existing')!.id;
+
+      createFolder(doc, '/Existing');
+      expect(filemeta.get('/Existing')!.id).toBe(firstId);
     });
   });
 

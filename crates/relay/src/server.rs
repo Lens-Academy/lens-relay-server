@@ -842,8 +842,7 @@ impl Server {
             };
             let awareness = doc_ref.awareness();
             let guard = awareness.read().unwrap_or_else(|e| e.into_inner());
-            let name =
-                y_sweet_core::doc_resolver::read_folder_name(&guard.doc, folder_doc_id);
+            let name = y_sweet_core::doc_resolver::read_folder_name(&guard.doc, folder_doc_id);
             if name == folder_name {
                 folder_match = Some(folder_doc_id.clone());
             }
@@ -891,17 +890,15 @@ impl Server {
         };
 
         // 4. Create content doc on server
-        self.get_or_create_doc(&full_doc_id)
-            .await
-            .map_err(|e| CreateDocumentError::Internal(format!("Failed to create content doc: {}", e)))?;
+        self.get_or_create_doc(&full_doc_id).await.map_err(|e| {
+            CreateDocumentError::Internal(format!("Failed to create content doc: {}", e))
+        })?;
 
         // 5. Write initial CriticMarkup-wrapped content to content doc
         {
-            let doc_ref = docs
-                .get(&full_doc_id)
-                .ok_or_else(|| {
-                    CreateDocumentError::Internal("Content doc not loaded after creation".into())
-                })?;
+            let doc_ref = docs.get(&full_doc_id).ok_or_else(|| {
+                CreateDocumentError::Internal("Content doc not loaded after creation".into())
+            })?;
             let awareness = doc_ref.awareness();
             let guard = awareness.write().unwrap_or_else(|e| e.into_inner());
             let mut txn = guard.doc.transact_mut();
@@ -921,22 +918,39 @@ impl Server {
         {
             let doc_ref = docs
                 .get(&folder_doc_id)
-                .ok_or_else(|| {
-                    CreateDocumentError::Internal("Folder doc not loaded".into())
-                })?;
+                .ok_or_else(|| CreateDocumentError::Internal("Folder doc not loaded".into()))?;
             let awareness = doc_ref.awareness();
             let guard = awareness.write().unwrap_or_else(|e| e.into_inner());
             let mut txn = guard.doc.transact_mut_with("mcp");
 
             let filemeta = txn.get_or_insert_map("filemeta_v0");
+            let docs_map = txn.get_or_insert_map("docs");
+
+            // Create intermediate folder entries for nested paths
+            let ancestors_created = link_indexer::ensure_ancestor_folders(
+                &filemeta,
+                &docs_map,
+                &mut txn,
+                in_folder_path,
+            );
+            if ancestors_created > 0 {
+                tracing::info!(
+                    "Created {} ancestor folder entries for path {}",
+                    ancestors_created,
+                    in_folder_path
+                );
+            }
+
             let mut map = std::collections::HashMap::new();
             map.insert("id".to_string(), yrs::Any::String(uuid.clone().into()));
             map.insert("type".to_string(), yrs::Any::String("markdown".into()));
             map.insert("version".to_string(), yrs::Any::Number(0.0));
             filemeta.insert(&mut txn, in_folder_path, yrs::Any::Map(map.into()));
-
-            let docs_map = txn.get_or_insert_map("docs");
-            docs_map.insert(&mut txn, in_folder_path, yrs::Any::String(uuid.clone().into()));
+            docs_map.insert(
+                &mut txn,
+                in_folder_path,
+                yrs::Any::String(uuid.clone().into()),
+            );
         }
 
         // 7. Update doc_resolver
@@ -1043,8 +1057,7 @@ impl Server {
                 let txn = guard.doc.transact();
                 if let Some(filemeta) = txn.get_map("filemeta_v0") {
                     for (_path, value) in filemeta.iter(&txn) {
-                        if let Some(id) =
-                            link_indexer::extract_id_from_filemeta_entry(&value, &txn)
+                        if let Some(id) = link_indexer::extract_id_from_filemeta_entry(&value, &txn)
                         {
                             if id == uuid {
                                 source_folder_doc_id = Some(folder_doc_id.clone());
@@ -1169,8 +1182,7 @@ impl Server {
                 .map(|a| a.write().unwrap_or_else(|e| e.into_inner()))
                 .collect();
 
-            let folder_doc_refs: Vec<&yrs::Doc> =
-                folder_guards.iter().map(|g| &g.doc).collect();
+            let folder_doc_refs: Vec<&yrs::Doc> = folder_guards.iter().map(|g| &g.doc).collect();
             let folder_name_strings: Vec<String> = folder_doc_ids
                 .iter()
                 .zip(folder_guards.iter())
@@ -1201,8 +1213,7 @@ impl Server {
                 .iter()
                 .filter_map(|id| docs.get(id))
                 .collect();
-            let content_awareness: Vec<_> =
-                content_refs.iter().map(|r| r.awareness()).collect();
+            let content_awareness: Vec<_> = content_refs.iter().map(|r| r.awareness()).collect();
             let content_guards: Vec<_> = content_awareness
                 .iter()
                 .map(|a| a.write().unwrap_or_else(|e| e.into_inner()))

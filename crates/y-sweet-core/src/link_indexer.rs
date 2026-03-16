@@ -114,6 +114,40 @@ pub fn extract_type_from_filemeta_entry(value: &Out, txn: &impl ReadTxn) -> Opti
     }
 }
 
+/// Ensure all ancestor folder entries exist in filemeta_v0 and the legacy docs map.
+///
+/// For a path like "/Projects/Alpha/Document.md", creates entries for
+/// "/Projects" and "/Projects/Alpha" if they don't already exist.
+///
+/// Returns the number of entries created.
+pub fn ensure_ancestor_folders(
+    filemeta: &MapRef,
+    docs_map: &MapRef,
+    txn: &mut yrs::TransactionMut,
+    path: &str,
+) -> usize {
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 1 {
+        return 0;
+    }
+    let mut created = 0;
+    for i in 1..parts.len() {
+        let ancestor = format!("/{}", parts[..i].join("/"));
+        if filemeta.get(txn, &ancestor).is_some() {
+            continue;
+        }
+        let folder_uuid = uuid::Uuid::new_v4().to_string();
+        let mut map = std::collections::HashMap::new();
+        map.insert("id".to_string(), Any::String(folder_uuid.clone().into()));
+        map.insert("type".to_string(), Any::String("folder".into()));
+        map.insert("version".to_string(), Any::Number(0.0));
+        filemeta.insert(txn, &*ancestor, Any::Map(map.into()));
+        docs_map.insert(txn, &*ancestor, Any::String(folder_uuid.into()));
+        created += 1;
+    }
+    created
+}
+
 /// Find the filemeta path key for a given UUID by scanning all entries.
 /// Returns `None` if the UUID is not found in the filemeta map.
 pub fn find_path_for_uuid(filemeta: &MapRef, txn: &impl ReadTxn, uuid: &str) -> Option<String> {
@@ -685,17 +719,19 @@ pub fn move_document(
         {
             let mut txn = target_folder_doc.transact_mut_with("link-indexer");
             let filemeta = txn.get_or_insert_map("filemeta_v0");
-            filemeta.insert(&mut txn, new_path, Any::Map(meta_fields.clone().into()));
             let docs_map = txn.get_or_insert_map("docs");
+            ensure_ancestor_folders(&filemeta, &docs_map, &mut txn, new_path);
+            filemeta.insert(&mut txn, new_path, Any::Map(meta_fields.clone().into()));
             docs_map.insert(&mut txn, new_path, Any::String(uuid.into()));
         }
     } else {
         // Within-folder: remove old, insert new in one transaction
         let mut txn = source_folder_doc.transact_mut_with("link-indexer");
         let filemeta = txn.get_or_insert_map("filemeta_v0");
+        let docs_map = txn.get_or_insert_map("docs");
+        ensure_ancestor_folders(&filemeta, &docs_map, &mut txn, new_path);
         filemeta.remove(&mut txn, &old_path);
         filemeta.insert(&mut txn, new_path, Any::Map(meta_fields.clone().into()));
-        let docs_map = txn.get_or_insert_map("docs");
         docs_map.remove(&mut txn, &old_path);
         docs_map.insert(&mut txn, new_path, Any::String(uuid.into()));
     }
@@ -4668,5 +4704,83 @@ mod tests {
             .expect("backlinks_v0 should exist");
         let ideas_backlinks = read_backlinks_array(&backlinks, &txn, ideas_uuid);
         assert_eq!(ideas_backlinks, vec![notes_uuid]);
+    }
+
+    // === ensure_ancestor_folders tests ===
+
+    #[test]
+    fn ensure_ancestor_folders_creates_missing() {
+        let doc = Doc::new();
+        let mut txn = doc.transact_mut();
+        let filemeta = txn.get_or_insert_map("filemeta_v0");
+        let docs_map = txn.get_or_insert_map("docs");
+
+        let created = ensure_ancestor_folders(&filemeta, &docs_map, &mut txn, "/A/B/C/doc.md");
+        assert_eq!(created, 3, "should create /A, /A/B, /A/B/C");
+
+        // Verify each ancestor exists in filemeta with type "folder"
+        for path in &["/A", "/A/B", "/A/B/C"] {
+            let entry = filemeta
+                .get(&txn, path)
+                .expect(&format!("{} should exist in filemeta", path));
+            let entry_type = extract_type_from_filemeta_entry(&entry, &txn);
+            assert_eq!(
+                entry_type.as_deref(),
+                Some("folder"),
+                "{} should have type folder",
+                path
+            );
+            let entry_id = extract_id_from_filemeta_entry(&entry, &txn);
+            assert!(entry_id.is_some(), "{} should have an id", path);
+        }
+
+        // Verify each ancestor exists in docs_map
+        for path in &["/A", "/A/B", "/A/B/C"] {
+            assert!(
+                docs_map.get(&txn, path).is_some(),
+                "{} should exist in docs_map",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_ancestor_folders_skips_existing() {
+        let doc = Doc::new();
+        let mut txn = doc.transact_mut();
+        let filemeta = txn.get_or_insert_map("filemeta_v0");
+        let docs_map = txn.get_or_insert_map("docs");
+
+        // Pre-create /A
+        let existing_uuid = "existing-uuid-1234";
+        let mut map = HashMap::new();
+        map.insert("id".to_string(), Any::String(existing_uuid.into()));
+        map.insert("type".to_string(), Any::String("folder".into()));
+        map.insert("version".to_string(), Any::Number(0.0));
+        filemeta.insert(&mut txn, "/A", Any::Map(map.into()));
+        docs_map.insert(&mut txn, "/A", Any::String(existing_uuid.into()));
+
+        let created = ensure_ancestor_folders(&filemeta, &docs_map, &mut txn, "/A/B/doc.md");
+        assert_eq!(created, 1, "should only create /A/B, not /A");
+
+        // /A should still have the original UUID
+        let a_entry = filemeta.get(&txn, "/A").unwrap();
+        let a_id = extract_id_from_filemeta_entry(&a_entry, &txn);
+        assert_eq!(
+            a_id.as_deref(),
+            Some(existing_uuid),
+            "/A UUID should be unchanged"
+        );
+    }
+
+    #[test]
+    fn ensure_ancestor_folders_top_level_noop() {
+        let doc = Doc::new();
+        let mut txn = doc.transact_mut();
+        let filemeta = txn.get_or_insert_map("filemeta_v0");
+        let docs_map = txn.get_or_insert_map("docs");
+
+        let created = ensure_ancestor_folders(&filemeta, &docs_map, &mut txn, "/doc.md");
+        assert_eq!(created, 0, "top-level path needs no ancestors");
     }
 }

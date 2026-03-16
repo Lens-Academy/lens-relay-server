@@ -4,6 +4,7 @@ import type { TreeNode } from '../../lib/tree-utils';
 import { FileTreeContextMenu } from './FileTreeContextMenu';
 import { useFileTreeContext } from './FileTreeContext';
 import { useDragTarget } from './FileTree';
+import { CreateMenu } from './CreateMenu';
 
 const INDENT_SIZE = 16; // Must match the indent prop in FileTree.tsx
 
@@ -214,20 +215,13 @@ export function FileTreeNode({
         </span>
       )}
 
-      {/* Create document button for folders */}
-      {isFolder && ctx.onCreateDocument && (
-        <button
-          aria-label={`Create document in ${node.data.name}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            ctx.onCreateDocument!(node.data.path);
-          }}
-          className="ml-auto flex-shrink-0 p-0.5 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-          </svg>
-        </button>
+      {/* Create menu (new file / new folder) for folders */}
+      {isFolder && (ctx.onCreateDocument || ctx.onCreateFolder) && (
+        <CreateMenu
+          folderName={node.data.name}
+          onCreateDocument={ctx.onCreateDocument ? () => ctx.onCreateDocument!(node.data.path) : undefined}
+          onCreateFolder={ctx.onCreateFolder ? () => ctx.onCreateFolder!(node.data.path) : undefined}
+        />
       )}
     </div>
   );

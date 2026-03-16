@@ -3599,6 +3599,7 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
+ "uuid",
  "yrs",
  "yrs-kvstore",
 ]

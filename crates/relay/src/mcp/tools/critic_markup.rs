@@ -1998,6 +1998,9 @@ mod tests {
     fn multibyte_utf8_in_code_block() {
         let raw = "```\n✅ emoji in code\n```";
         let spans = parse(raw);
-        assert_eq!(spans, vec![Span::Plain("```\n✅ emoji in code\n```".to_string())]);
+        assert_eq!(
+            spans,
+            vec![Span::Plain("```\n✅ emoji in code\n```".to_string())]
+        );
     }
 }

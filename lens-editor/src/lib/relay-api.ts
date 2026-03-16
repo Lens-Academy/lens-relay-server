@@ -242,9 +242,38 @@ export function deleteDocument(
 }
 
 /**
- * Set up debug observer on filemeta Y.Map to log all changes.
- * Call this once after connecting to the folder doc.
+ * Create a folder entry in the folder doc's metadata.
+ * Also creates any missing ancestor folder entries.
+ * No server call needed — folders are purely metadata.
  */
+export function createFolder(
+  folderDoc: Y.Doc,
+  path: string
+): void {
+  const filemeta = folderDoc.getMap<FileMetadata>('filemeta_v0');
+  const legacyDocs = folderDoc.getMap<string>('docs');
+
+  folderDoc.transact(() => {
+    // Create ancestor folders for nested paths (e.g., /A/B/C needs /A and /A/B)
+    const parts = path.split('/').filter(Boolean);
+    for (let i = 1; i < parts.length; i++) {
+      const ancestor = '/' + parts.slice(0, i).join('/');
+      if (!filemeta.has(ancestor)) {
+        const id = generateUUID();
+        filemeta.set(ancestor, { id, type: 'folder', version: 0 });
+        legacyDocs.set(ancestor, id);
+      }
+    }
+
+    // Create the folder itself (if it doesn't already exist)
+    if (!filemeta.has(path)) {
+      const id = generateUUID();
+      filemeta.set(path, { id, type: 'folder', version: 0 });
+      legacyDocs.set(path, id);
+    }
+  }, LENS_EDITOR_ORIGIN);
+}
+
 // --- Search API ---
 
 export interface SearchResult {

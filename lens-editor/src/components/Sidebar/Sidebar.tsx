@@ -12,7 +12,7 @@ import { useNavigation } from '../../contexts/NavigationContext';
 import { useResolvedDocId } from '../../hooks/useResolvedDocId';
 import { useSearch } from '../../hooks/useSearch';
 import { buildTreeFromPaths, filterTree, searchFileNames, buildDocIdToPathMap } from '../../lib/tree-utils';
-import { createDocument, deleteDocument, moveDocument } from '../../lib/relay-api';
+import { createDocument, createFolder, deleteDocument, moveDocument } from '../../lib/relay-api';
 import { getFolderDocForPath, getOriginalPath, getFolderNameFromPath, generateUntitledName } from '../../lib/multi-folder-utils';
 import { RELAY_ID } from '../../App';
 import { openDocInNewTab } from '../../lib/url-utils';
@@ -164,6 +164,29 @@ export function Sidebar() {
       console.error('Failed to create document:', error);
     }
   }, [folderDocs, folderNames, metadata, onNavigate, justCreatedRef]);
+
+  const handleCreateFolder = useCallback((folderPath: string) => {
+    const folderName = getFolderNameFromPath(folderPath, folderNames);
+    if (!folderName) return;
+    const doc = folderDocs.get(folderName);
+    if (!doc) return;
+
+    const originalFolderPath = getOriginalPath(folderPath, folderName);
+    const basePath = originalFolderPath === '' || originalFolderPath === '/'
+      ? '/New Folder'
+      : `${originalFolderPath}/New Folder`;
+
+    // Find a unique name if "New Folder" already exists
+    let path = basePath;
+    let counter = 2;
+    const filemeta = doc.getMap('filemeta_v0');
+    while (filemeta.has(path)) {
+      path = `${basePath} ${counter}`;
+      counter++;
+    }
+
+    createFolder(doc, path);
+  }, [folderDocs, folderNames]);
 
   const handleMoveRequest = useCallback((prefixedPath: string, docId: string) => {
     // Pre-populate with current path (strip folder prefix)
@@ -324,6 +347,7 @@ export function Sidebar() {
                     onRequestMove: handleMoveRequest,
                     onRenameSubmit: handleRenameSubmit,
                     onCreateDocument: handleInstantCreate,
+                    onCreateFolder: handleCreateFolder,
                     onOpenNewTab: handleOpenNewTab,
                     activeDocId,
                   }}
