@@ -18,6 +18,9 @@ pub async fn execute(server: &Arc<Server>, arguments: &Value) -> Result<String, 
         .and_then(|v| v.as_str())
         .unwrap_or("_");
 
+    // Reject if AI included CriticMarkup in content
+    super::critic_markup::reject_if_contains_markup(content, "content")?;
+
     // Validate: must end with .md
     if !file_path.ends_with(".md") {
         return Err("file_path must end with '.md'".to_string());

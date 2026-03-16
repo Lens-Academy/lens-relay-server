@@ -30,7 +30,11 @@ pub async fn execute(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required parameter: new_string".to_string())?;
 
-    // 2. Resolve document path to doc_id
+    // 2. Reject if AI included CriticMarkup in its input
+    super::critic_markup::reject_if_contains_markup(old_string, "old_string")?;
+    super::critic_markup::reject_if_contains_markup(new_string, "new_string")?;
+
+    // 3. Resolve document path to doc_id
     let doc_info = server
         .doc_resolver()
         .resolve_path(file_path)

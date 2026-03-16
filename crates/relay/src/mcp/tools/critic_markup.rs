@@ -12,6 +12,23 @@ pub enum Span {
     },
 }
 
+const CRITIC_DELIMITERS: &[&str] = &[
+    "{--", "--}", "{++", "++}", "{~~", "~~}", "{==", "==}", "{>>", "<<}",
+];
+
+/// Check if text contains CriticMarkup delimiters. Returns an error message if found.
+pub fn reject_if_contains_markup(text: &str, param_name: &str) -> Result<(), String> {
+    for delim in CRITIC_DELIMITERS {
+        if text.contains(delim) {
+            return Err(format!(
+                "Error: {} contains CriticMarkup syntax '{}'. Do not include CriticMarkup in your input — the system handles suggestion wrapping automatically.",
+                param_name, delim
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Extract metadata (author, timestamp) from the inner content of a critic markup block.
 /// The format is: `{"author":"AI","timestamp":1700000000000}@@actual content`
 /// Only splits on `@@` if the prefix is valid JSON containing an "author" field.
@@ -1843,6 +1860,30 @@ mod tests {
             accepted_view(&spans),
             "Use {--old--} for deletions and {++new for insertions.++}"
         );
+    }
+
+    // --- Input validation: reject CriticMarkup in AI input ---
+
+    #[test]
+    fn reject_criticmarkup_in_old_string() {
+        assert!(reject_if_contains_markup("normal text", "old_string").is_ok());
+        assert!(reject_if_contains_markup("{--deleted--}", "old_string").is_err());
+        assert!(reject_if_contains_markup("{++inserted++}", "old_string").is_err());
+        assert!(
+            reject_if_contains_markup("text with {~~sub~>rep~~} inside", "old_string").is_err()
+        );
+    }
+
+    #[test]
+    fn reject_criticmarkup_in_new_string() {
+        assert!(reject_if_contains_markup("normal replacement", "new_string").is_ok());
+        assert!(reject_if_contains_markup("has {--markup--} inside", "new_string").is_err());
+    }
+
+    #[test]
+    fn reject_criticmarkup_in_content() {
+        assert!(reject_if_contains_markup("# Normal Title\n\nContent here.", "content").is_ok());
+        assert!(reject_if_contains_markup("Has {++suggestion++} inside", "content").is_err());
     }
 
     // --- Group C: render_pending_summary() ---
