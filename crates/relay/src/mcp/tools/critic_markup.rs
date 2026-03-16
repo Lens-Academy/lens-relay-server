@@ -82,8 +82,9 @@ pub fn parse(raw: &str) -> Vec<Span> {
         }
 
         if in_code_block {
-            plain.push(bytes[i] as char);
-            i += 1;
+            let ch = raw[i..].chars().next().unwrap();
+            plain.push(ch);
+            i += ch.len_utf8();
             continue;
         }
 
@@ -166,8 +167,9 @@ pub fn parse(raw: &str) -> Vec<Span> {
             }
         }
 
-        plain.push(raw[i..].chars().next().unwrap());
-        i += 1;
+        let ch = raw[i..].chars().next().unwrap();
+        plain.push(ch);
+        i += ch.len_utf8();
     }
 
     if !plain.is_empty() {
@@ -1975,5 +1977,27 @@ mod tests {
         let footer = render_pending_summary(&spans, &accepted).unwrap();
         assert!(footer.contains("Unknown"));
         assert!(!footer.contains("ago"));
+    }
+
+    #[test]
+    fn multibyte_utf8_plain_text() {
+        // Regression: multi-byte chars (e.g. ✅) caused panic at byte boundary
+        let raw = "Status: ✅ done";
+        let spans = parse(raw);
+        assert_eq!(spans, vec![Span::Plain("Status: ✅ done".to_string())]);
+    }
+
+    #[test]
+    fn multibyte_utf8_around_suggestion() {
+        let raw = "✅ {--old--}{++new++} 🎉";
+        let spans = parse(raw);
+        assert_eq!(accepted_view(&spans), "✅ new 🎉");
+    }
+
+    #[test]
+    fn multibyte_utf8_in_code_block() {
+        let raw = "```\n✅ emoji in code\n```";
+        let spans = parse(raw);
+        assert_eq!(spans, vec![Span::Plain("```\n✅ emoji in code\n```".to_string())]);
     }
 }
