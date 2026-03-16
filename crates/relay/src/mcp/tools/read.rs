@@ -58,7 +58,18 @@ pub async fn execute(
         session.read_docs.insert(doc_info.doc_id.clone());
     }
 
-    Ok(format_cat_n(&content, offset, limit))
+    // Parse CriticMarkup and return accepted view
+    let spans = super::critic_markup::parse(&content);
+    let accepted = super::critic_markup::accepted_view(&spans);
+    let footer = super::critic_markup::render_pending_summary(&spans, &accepted);
+
+    let mut output = format_cat_n(&accepted, offset, limit);
+    if let Some(footer_text) = footer {
+        output.push_str("\n\n");
+        output.push_str(&footer_text);
+    }
+
+    Ok(output)
 }
 
 /// Format content as cat -n output with 6-char right-aligned line numbers.
@@ -86,6 +97,53 @@ fn format_cat_n(content: &str, offset: usize, limit: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod accepted_view_tests {
+    use super::*;
+    use crate::mcp::tools::test_helpers::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn read_returns_accepted_view_with_footer() {
+        let server = build_test_server(&[(
+            "/Doc.md", "uuid-doc",
+            "The {--quick--}{++fast++} brown fox.",
+        )]).await;
+        let sid = setup_session_with_read(&server, &format!("{}-uuid-doc", RELAY_ID));
+        let result = execute(&server, &sid, &json!({
+            "file_path": "Lens/Doc.md", "session_id": sid,
+        })).await.unwrap();
+
+        // Accepted view shown — should contain "fast" not "quick"
+        assert!(result.contains("The fast brown fox."), "Should show accepted view, got: {}", result);
+        // Raw CriticMarkup should NOT be in the primary content lines
+        // (it may appear in the footer, which is fine)
+        let primary_lines: Vec<&str> = result.lines()
+            .take_while(|l| !l.contains("[Pending suggestions]"))
+            .collect();
+        let primary = primary_lines.join("\n");
+        assert!(!primary.contains("{--"), "Primary content should not contain raw CriticMarkup: {}", primary);
+
+        // Footer should be present
+        assert!(result.contains("[Pending suggestions]"), "Should have pending suggestions footer: {}", result);
+    }
+
+    #[tokio::test]
+    async fn read_plain_doc_no_footer() {
+        let server = build_test_server(&[(
+            "/Doc.md", "uuid-doc",
+            "Just plain text, no markup.",
+        )]).await;
+        let sid = setup_session_with_read(&server, &format!("{}-uuid-doc", RELAY_ID));
+        let result = execute(&server, &sid, &json!({
+            "file_path": "Lens/Doc.md", "session_id": sid,
+        })).await.unwrap();
+
+        assert!(result.contains("Just plain text, no markup."));
+        assert!(!result.contains("[Pending suggestions]"), "Plain doc should have no footer: {}", result);
+    }
 }
 
 #[cfg(test)]
